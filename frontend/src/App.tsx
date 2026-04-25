@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent,
@@ -142,7 +143,9 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionList, setSessionList] = useState<SessionListItem[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [rightPanelTab, setRightPanelTab] = useState<'research' | 'plan'>('plan')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [feed, setFeed] = useState<FeedItem[]>([])
@@ -208,6 +211,8 @@ export default function App() {
       setSessionList(list)
     } catch {
       setSessionList([])
+    } finally {
+      setSessionsLoading(false)
     }
   }, [])
 
@@ -215,6 +220,21 @@ export default function App() {
     void refreshConnection()
     void loadSessionList()
   }, [refreshConnection, loadSessionList])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && window.matchMedia('(max-width: 639px)').matches) {
+        setSidebarOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const currentSessionTitle = useMemo(() => {
+    if (!sessionId) return null
+    return sessionList.find((s) => s.id === sessionId)?.title || null
+  }, [sessionId, sessionList])
 
   useEffect(() => {
     scrollToBottom()
@@ -227,6 +247,7 @@ export default function App() {
     setResearch(null)
     setPhase('')
     setAwaiting(false)
+    setRightPanelTab('plan')
   }, [])
 
   const stopStream = useCallback(() => {
@@ -246,8 +267,10 @@ export default function App() {
         brief: data.research_brief,
         sources: (data.research_sources || []) as { title: string; href: string }[],
       })
+      setRightPanelTab('research')
     } else {
       setResearch(null)
+      setRightPanelTab('plan')
     }
     setFeed(sessionMessagesToFeed(data.messages || []))
   }, [])
@@ -324,10 +347,16 @@ export default function App() {
       const p = ev as { content: string; filename: string }
       setPlanMd(p.content)
       setPlanName(p.filename || 'plan.md')
+      if (window.matchMedia('(max-width: 1023px)').matches) {
+        setRightPanelTab('plan')
+      }
     }
     if ((ev as { type: string }).type === 'research') {
       const r = ev as { brief: string; sources: { title: string; href: string }[] }
       setResearch({ brief: r.brief, sources: r.sources || [] })
+      if (window.matchMedia('(max-width: 1023px)').matches) {
+        setRightPanelTab('research')
+      }
     }
     if ((ev as { type: string }).type === 'awaiting_user') {
       setAwaiting(true)
@@ -424,13 +453,27 @@ export default function App() {
 
   return (
     <div className="h-dvh flex flex-col sm:flex-row bg-[#0b0c0f] text-slate-100 overflow-hidden">
+      {/* Mobile: dim + close when tapping outside */}
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Close chat list"
+          className="fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px] sm:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar — sessions */}
       <aside
+        id="session-sidebar"
         className={`
-        shrink-0 border-r border-white/5 bg-[#0e1016] flex flex-col
-        sm:w-80 sm:static sm:max-h-none
-        ${sidebarOpen ? 'w-full max-h-[40vh] sm:max-h-none' : 'hidden sm:flex sm:w-80'}
+        fixed z-40 inset-y-0 left-0 flex flex-col w-[min(100%,19rem)] border-r border-white/5
+        bg-[#0e1016] shadow-2xl shadow-black/40
+        transition-transform duration-200 ease-out motion-reduce:transition-none
+        sm:static sm:z-0 sm:w-80 sm:max-h-none sm:shadow-none sm:translate-x-0
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'}
       `}
+        aria-label="Chat history"
       >
         <div className="p-3 border-b border-white/5 flex items-center gap-2">
           <div className="flex-1 min-w-0">
@@ -446,19 +489,33 @@ export default function App() {
           <button
             type="button"
             onClick={() => void newChat()}
-            className="w-full rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium py-2.5 px-3 shadow-lg shadow-violet-900/20 transition"
+            className="w-full rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.98] text-white text-sm font-medium py-2.5 px-3 shadow-lg shadow-violet-900/25 transition motion-reduce:transform-none"
           >
-            + New chat
+            New chat
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3 space-y-0.5">
-          {sessionList.length === 0 && (
-            <p className="text-xs text-slate-500 px-2 py-3">
-              No saved chats yet. New chats are stored on the server so you can
-              continue later.
+          {sessionsLoading && (
+            <div className="px-2 py-2 space-y-2" aria-hidden>
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="rounded-xl border border-white/5 bg-white/[0.03] p-2.5 animate-pulse"
+                >
+                  <div className="h-3.5 bg-slate-700/50 rounded w-4/5 mb-2" />
+                  <div className="h-2.5 bg-slate-800/80 rounded w-2/5" />
+                </div>
+              ))}
+            </div>
+          )}
+          {!sessionsLoading && sessionList.length === 0 && (
+            <p className="text-xs text-slate-500 px-2 py-3 leading-relaxed">
+              No saved chats yet. Start one and it stays on this server so you can
+              pick it up anytime.
             </p>
           )}
-          {sessionList.map((s) => {
+          {!sessionsLoading &&
+            sessionList.map((s) => {
             const active = s.id === sessionId
             return (
               <div
@@ -469,14 +526,18 @@ export default function App() {
                 onKeyDown={(e) => e.key === 'Enter' && void openSession(s.id)}
                 className={`
                   group w-full text-left rounded-xl px-2.5 py-2 pr-1 flex gap-1 items-start
-                  transition
+                  transition-colors focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/50
                   ${
                     active
-                      ? 'bg-violet-500/15 border border-violet-500/25'
+                      ? 'bg-violet-500/15 border border-violet-500/30 ring-1 ring-violet-500/10'
                       : 'hover:bg-white/5 border border-transparent'
                   }
                 `}
               >
+                <div
+                  className={`shrink-0 w-0.5 self-stretch rounded-full ${active ? 'bg-violet-400' : 'bg-transparent'}`}
+                  aria-hidden
+                />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-slate-100 line-clamp-2 font-medium">
                     {s.title || 'Untitled'}
@@ -488,17 +549,19 @@ export default function App() {
                       {s.phase}
                     </span>
                     {s.has_plan && (
-                      <span className="text-emerald-400/90">has plan</span>
+                      <span className="text-emerald-400/90">plan</span>
                     )}
-                    <span className="ml-auto">
+                    <span className="ml-auto tabular-nums">
                       {formatSessionTime(s.updated_ts)}
                     </span>
                   </div>
                 </div>
                 <button
                   type="button"
-                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-500/10"
-                  title="Delete"
+                  className={`text-slate-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-500/10 shrink-0
+                    ${active ? 'opacity-100' : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100'}`}
+                  title="Delete chat"
+                  aria-label={`Delete ${s.title || 'chat'}`}
                   onClick={(e) => void removeSession(s.id, e)}
                 >
                   <svg
@@ -527,11 +590,13 @@ export default function App() {
         <header className="shrink-0 border-b border-white/5 bg-[#0b0c0f]/90 backdrop-blur-sm px-3 py-2 sm:px-4 flex flex-wrap items-center gap-2 z-10">
           <button
             type="button"
-            className="sm:hidden rounded-lg border border-slate-600/60 px-2 py-1.5 text-xs text-slate-300"
+            className="sm:hidden rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-xs text-slate-200 touch-manipulation"
             onClick={() => setSidebarOpen((o) => !o)}
-            aria-label="Toggle sidebar"
+            aria-expanded={sidebarOpen}
+            aria-controls="session-sidebar"
+            aria-label={sidebarOpen ? 'Close chat list' : 'Open chat list'}
           >
-            Chats
+            {sidebarOpen ? 'Close' : 'Chats'}
           </button>
           <div
             className={`hidden sm:block h-2 w-2 rounded-full shrink-0 ${
@@ -599,15 +664,30 @@ export default function App() {
         <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
           {/* Messages */}
           <div className="flex-1 flex flex-col min-w-0 min-h-0 border-b lg:border-b-0 lg:border-r border-white/5">
-            <div className="shrink-0 flex items-center justify-between px-3 py-1.5 text-[10px] text-slate-500 uppercase tracking-wide border-b border-white/5">
-              <span>Chat</span>
+            <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 text-[10px] text-slate-500 uppercase tracking-wide border-b border-white/5">
+              <div className="min-w-0 flex-1">
+                <div className="text-[9px] font-medium text-slate-500">Chat</div>
+                {sessionId && (
+                  <div className="mt-0.5 normal-case text-xs text-slate-200/90 font-medium line-clamp-1 tracking-normal">
+                    {currentSessionTitle || 'New session'}
+                  </div>
+                )}
+              </div>
               {sessionId && (
-                <span className="text-slate-600 font-mono text-[9px] truncate max-w-[10rem]">
+                <span
+                  className="text-slate-600 font-mono text-[9px] truncate max-w-[5rem] sm:max-w-[10rem] shrink-0"
+                  title={sessionId}
+                >
                   {sessionId}
                 </span>
               )}
               {phase && (
-                <span className="text-violet-300/80 normal-case">{phase}</span>
+                <span
+                  className="text-violet-300/90 normal-case text-[9px] max-w-[7rem] truncate"
+                  title={phase}
+                >
+                  {phase}
+                </span>
               )}
             </div>
             <div
@@ -615,18 +695,24 @@ export default function App() {
               className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 py-3 space-y-3"
             >
               {feed.length === 0 && !sessionId && (
-                <div className="rounded-2xl border border-dashed border-slate-700/50 bg-slate-900/20 p-6 text-center">
-                  <p className="text-slate-300 text-sm font-medium">Start a plan</p>
-                  <p className="text-slate-500 text-xs mt-1 max-w-sm mx-auto">
-                    Click <b>New chat</b>, pick a <b>text</b> model, describe what you
-                    want built. Chats are saved on this machine under{' '}
-                    <code className="text-slate-400">data/sessions/</code>.
+                <div className="rounded-2xl border border-dashed border-slate-600/35 bg-gradient-to-b from-slate-900/40 to-slate-950/30 p-6 sm:p-8 text-left max-w-md mx-auto">
+                  <p className="text-slate-200 text-sm font-semibold">Start a council run</p>
+                  <ol className="text-slate-500 text-xs mt-3 space-y-2 list-decimal list-inside leading-relaxed">
+                    <li>
+                      Use <span className="text-slate-300">New chat</span> in the sidebar
+                    </li>
+                    <li>Choose a <span className="text-slate-300">text</span> chat model (not image-only)</li>
+                    <li>Describe what you want built — the rest happens in the feed</li>
+                  </ol>
+                  <p className="text-slate-600 text-[11px] mt-4">
+                    Chats are stored in{' '}
+                    <code className="text-slate-500">data/sessions/</code> on the server.
                   </p>
                 </div>
               )}
               {feed.length === 0 && sessionId && (
-                <p className="text-slate-500 text-sm">
-                  Type your first message, or add to this saved chat.
+                <p className="text-slate-500 text-sm text-center max-w-sm mx-auto">
+                  Send a message to continue, or open another chat from the list.
                 </p>
               )}
               {feed.map((f) => (
@@ -655,10 +741,18 @@ export default function App() {
                 </article>
               ))}
               {busy && (
-                <p className="text-slate-500 text-xs flex items-center gap-2">
-                  <span className="inline-block size-1.5 rounded-full bg-violet-500 animate-pulse" />
-                  Running…
-                </p>
+                <div
+                  className="rounded-xl border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200/90 flex items-center gap-2"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="flex gap-0.5" aria-hidden>
+                    <span className="size-1.5 rounded-full bg-violet-400 animate-bounce [animation-delay:-0.2s]" />
+                    <span className="size-1.5 rounded-full bg-violet-400 animate-bounce" />
+                    <span className="size-1.5 rounded-full bg-violet-400 animate-bounce [animation-delay:0.2s]" />
+                  </span>
+                  Council is working…
+                </div>
               )}
             </div>
 
@@ -666,11 +760,15 @@ export default function App() {
               <div className="max-w-3xl mx-auto flex gap-2">
                 <textarea
                   ref={composerRef}
-                  className="flex-1 min-h-[44px] max-h-32 rounded-xl border border-slate-600/70 bg-slate-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-violet-500/40 disabled:opacity-50"
+                  className={`flex-1 min-h-[44px] max-h-32 rounded-xl border bg-slate-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-violet-500/35 disabled:opacity-50 ${
+                    awaiting
+                      ? 'border-amber-500/40 ring-1 ring-amber-500/20'
+                      : 'border-slate-600/70'
+                  }`}
                   placeholder={
                     awaiting
-                      ? 'Reply to the council…'
-                      : 'Describe the idea… Enter to send, Shift+Enter new line'
+                      ? 'Reply to the council (they asked a question)…'
+                      : 'Describe the idea — Enter to send, Shift+Enter for a new line'
                   }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -706,53 +804,116 @@ export default function App() {
           </div>
 
           {/* Plan + research panel */}
-          <div className="w-full lg:w-[min(100%,24rem)] shrink-0 flex flex-col min-h-0 max-h-48 lg:max-h-none border-t lg:border-t-0 lg:border-l border-white/5 bg-[#0a0b0e]">
-            <div className="shrink-0 px-3 py-1.5 text-[10px] text-slate-500 uppercase border-b border-white/5">
-              Research & plan
+          <div
+            className="w-full lg:w-[min(100%,24rem)] shrink-0 flex flex-col min-h-0 max-h-[min(50dvh,22rem)] lg:max-h-none border-t lg:border-t-0 lg:border-l border-white/5 bg-[#0a0b0e]"
+            role="complementary"
+            aria-label="Research and plan"
+          >
+            <div className="hidden lg:block shrink-0 px-3 py-1.5 text-[10px] text-slate-500 uppercase border-b border-white/5">
+              Research &amp; plan
+            </div>
+            <div
+              className="shrink-0 flex lg:hidden border-b border-white/5"
+              role="tablist"
+              aria-label="Panel section"
+            >
+              <button
+                type="button"
+                role="tab"
+                id="tab-research"
+                aria-selected={rightPanelTab === 'research'}
+                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                  rightPanelTab === 'research'
+                    ? 'text-violet-200 border-b-2 border-violet-500 bg-violet-500/5'
+                    : 'text-slate-500 border-b-2 border-transparent'
+                }`}
+                onClick={() => setRightPanelTab('research')}
+              >
+                Research
+                {research && (
+                  <span className="ml-1.5 inline-flex size-1.5 rounded-full bg-emerald-400" />
+                )}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-plan"
+                aria-selected={rightPanelTab === 'plan'}
+                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                  rightPanelTab === 'plan'
+                    ? 'text-violet-200 border-b-2 border-violet-500 bg-violet-500/5'
+                    : 'text-slate-500 border-b-2 border-transparent'
+                }`}
+                onClick={() => setRightPanelTab('plan')}
+              >
+                Plan
+                {planMd && (
+                  <span className="ml-1.5 inline-flex size-1.5 rounded-full bg-violet-400" />
+                )}
+              </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
-              {research && (
-                <div>
-                  <h3 className="text-xs font-medium text-slate-300">Sources</h3>
-                  <ul className="mt-1.5 text-[11px] text-slate-500 space-y-1 max-h-20 overflow-y-auto">
-                    {research.sources?.slice(0, 8).map((s) => (
-                      <li key={s.href}>
-                        <a
-                          href={s.href}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-violet-400/90 hover:underline line-clamp-1"
-                        >
-                          {s.title || s.href}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="text-xs text-slate-400 mt-2 leading-relaxed line-clamp-3">
-                    {research.brief}
+              <div
+                className={`
+                ${rightPanelTab === 'research' ? 'block' : 'hidden'} lg:block
+              `}
+                role="tabpanel"
+                aria-labelledby="tab-research"
+              >
+                {research ? (
+                  <div>
+                    <h3 className="text-xs font-medium text-slate-300">Sources</h3>
+                    <ul className="mt-1.5 text-[11px] text-slate-500 space-y-1 max-h-32 lg:max-h-24 overflow-y-auto">
+                      {research.sources?.slice(0, 12).map((s) => (
+                        <li key={s.href}>
+                          <a
+                            href={s.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-violet-400/90 hover:underline line-clamp-1"
+                          >
+                            {s.title || s.href}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                      {research.brief}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Web research summaries show here while the run collects sources.
                   </p>
-                </div>
-              )}
-              <div className="border-t border-white/5 pt-3">
-                <div className="flex justify-between items-center mb-1">
+                )}
+              </div>
+              <div
+                className={`
+                border-t border-white/5 pt-3
+                ${rightPanelTab === 'plan' ? 'block' : 'hidden'} lg:block lg:border-t-0 lg:pt-0
+              `}
+                role="tabpanel"
+                aria-labelledby="tab-plan"
+              >
+                <div className="flex justify-between items-center gap-2 mb-2">
                   <h3 className="text-xs font-medium text-slate-200">plan.md</h3>
                   {planMd && (
                     <button
                       type="button"
                       onClick={downloadPlan}
-                      className="text-[10px] rounded-md border border-violet-500/30 px-2 py-1 text-violet-200"
+                      className="text-[10px] rounded-md border border-violet-500/30 px-2 py-1 text-violet-200 hover:bg-violet-500/10"
                     >
                       Download
                     </button>
                   )}
                 </div>
                 {planMd ? (
-                  <pre className="text-[11px] text-slate-300/90 font-mono leading-relaxed whitespace-pre-wrap break-words max-h-64 lg:max-h-[56vh] overflow-y-auto">
+                  <pre className="text-[11px] text-slate-300/90 font-mono leading-relaxed whitespace-pre-wrap break-words max-h-[min(40dvh,18rem)] lg:max-h-[56vh] overflow-y-auto">
                     {planMd}
                   </pre>
                 ) : (
                   <p className="text-xs text-slate-500">
-                    The structured plan will appear when the run completes.
+                    The structured plan appears here when the council finishes a pass.
                   </p>
                 )}
               </div>
