@@ -96,7 +96,7 @@ async def health() -> dict[str, Any]:
 
 
 @app.get("/api/models")
-async def list_models() -> dict[str, list[str] | str]:
+async def list_models() -> dict[str, Any]:
     settings = get_settings()
     if settings.llm_provider == "ollama":
         # Single /api/tags fetch — avoids duplicate GETs that could disagree (e.g. first timing out, second OK).
