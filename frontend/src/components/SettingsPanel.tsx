@@ -28,14 +28,14 @@ export function SettingsPanel({
   const ollamaOk = oll?.reachable && (oll.model_count ?? 0) > 0
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#0b0c0f]">
-      <header className="shrink-0 border-b border-white/5 px-3 py-2 sm:px-4">
-        <div className="flex items-center gap-3 flex-wrap">
+    <div className="flex flex-col h-full min-h-0 bg-[#090a0d]">
+      <header className="shrink-0 border-b border-white/[0.06] px-3 py-3 sm:px-4 bg-[#08090c]/80 backdrop-blur-sm">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {onOpenSidebar && (
             <button
               type="button"
               onClick={onOpenSidebar}
-              className="sm:hidden rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-xs text-slate-200"
+              className="sm:hidden rounded-lg border border-slate-600/50 bg-slate-900/50 px-2.5 py-1.5 text-xs font-medium text-slate-200"
             >
               Chats
             </button>
@@ -43,14 +43,14 @@ export function SettingsPanel({
           <button
             type="button"
             onClick={onBack}
-            className="text-xs text-violet-400 hover:underline"
+            className="inline-flex items-center gap-1.5 text-sm text-violet-300 hover:text-violet-200 font-medium"
           >
-            ← Back to chats
+            <span aria-hidden>←</span> Chats
           </button>
-          <h2 className="text-sm font-semibold text-slate-100">Settings</h2>
+          <h2 className="text-base font-semibold text-slate-100">Settings</h2>
         </div>
         <div
-          className="mt-3 flex gap-1 p-0.5 rounded-xl bg-slate-900/80 border border-white/5 w-fit"
+          className="mt-4 flex gap-1 p-1 rounded-xl bg-slate-900/60 border border-white/[0.06] w-full max-w-md"
           role="tablist"
           aria-label="Settings section"
         >
@@ -58,9 +58,9 @@ export function SettingsPanel({
             type="button"
             role="tab"
             aria-selected={tab === 'connection'}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === 'connection'
-                ? 'bg-violet-500/25 text-violet-100'
+                ? 'bg-violet-500/20 text-violet-50 shadow-sm'
                 : 'text-slate-500 hover:text-slate-300'
             }`}
             onClick={() => setTab('connection')}
@@ -71,9 +71,9 @@ export function SettingsPanel({
             type="button"
             role="tab"
             aria-selected={tab === 'agents'}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === 'agents'
-                ? 'bg-violet-500/25 text-violet-100'
+                ? 'bg-violet-500/20 text-violet-50 shadow-sm'
                 : 'text-slate-500 hover:text-slate-300'
             }`}
             onClick={() => setTab('agents')}

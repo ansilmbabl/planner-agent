@@ -138,6 +138,49 @@ function phasePill(phase: string) {
   return 'text-violet-200 border-violet-500/30'
 }
 
+function feedItemShell(
+  kind: FeedItem['kind'],
+  isUser: boolean,
+  isErr: boolean
+) {
+  if (isUser) {
+    return 'ml-auto max-w-[min(100%,36rem)] bg-violet-500/10 border border-violet-500/20 shadow-sm shadow-violet-950/25'
+  }
+  if (isErr) {
+    return 'bg-rose-500/[0.06] border border-rose-500/25'
+  }
+  const base = 'max-w-3xl border bg-slate-800/35 shadow-sm'
+  const accent: Record<FeedItem['kind'], string> = {
+    phase: 'border-indigo-500/25 border-l-4 border-l-indigo-400/80 bg-indigo-950/25',
+    research: 'border-cyan-500/20 border-l-4 border-l-cyan-500/60 bg-cyan-950/20',
+    agent: 'border-slate-600/40 border-l-4 border-l-violet-500/65 bg-slate-800/50',
+    synth: 'border-emerald-500/25 border-l-4 border-l-emerald-500/55 bg-emerald-950/20',
+    await: 'border-amber-500/30 border-l-4 border-l-amber-400/80 bg-amber-950/25',
+    err: 'border-rose-500/25',
+    text: 'border-slate-600/40 border-l-4 border-l-slate-500/50',
+  }
+  return `${base} ${accent[kind]}`
+}
+
+function feedTitleClass(
+  kind: FeedItem['kind'],
+  isUser: boolean,
+  isErr: boolean
+) {
+  if (isUser) return 'text-violet-200'
+  if (isErr) return 'text-rose-300/95'
+  const map: Record<FeedItem['kind'], string> = {
+    phase: 'text-indigo-200/95',
+    research: 'text-cyan-200/95',
+    agent: 'text-violet-200/95',
+    synth: 'text-emerald-200/95',
+    await: 'text-amber-200/95',
+    err: 'text-rose-300/95',
+    text: 'text-slate-300/95',
+  }
+  return map[kind]
+}
+
 export default function App() {
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
@@ -482,13 +525,13 @@ export default function App() {
   const ollamaHostReachable = oll?.reachable === true && oll.model_count === 0
 
   return (
-    <div className="h-dvh flex flex-col sm:flex-row bg-[#0b0c0f] text-slate-100 overflow-hidden">
+    <div className="h-dvh flex flex-col sm:flex-row bg-[#090a0d] text-slate-100 overflow-hidden selection:bg-violet-500/30">
       {/* Mobile: dim + close when tapping outside */}
       {sidebarOpen && (
         <button
           type="button"
           aria-label="Close chat list"
-          className="fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px] sm:hidden"
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm sm:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -497,30 +540,59 @@ export default function App() {
       <aside
         id="session-sidebar"
         className={`
-        fixed z-40 inset-y-0 left-0 flex flex-col w-[min(100%,19rem)] border-r border-white/5
-        bg-[#0e1016] shadow-2xl shadow-black/40
+        fixed z-40 inset-y-0 left-0 flex flex-col w-[min(100%,20rem)] border-r border-white/[0.06]
+        bg-[#0c0e14] shadow-2xl shadow-black/50
         transition-transform duration-200 ease-out motion-reduce:transition-none
-        sm:static sm:z-0 sm:w-80 sm:max-h-none sm:shadow-none sm:translate-x-0
+        sm:static sm:z-0 sm:w-[19rem] sm:max-h-none sm:shadow-none sm:translate-x-0
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'}
       `}
         aria-label="Chat history"
       >
-        <div className="p-3 border-b border-white/5 flex items-center gap-2">
-          <div className="flex-1 min-w-0">
-            <h1 className="text-sm font-semibold text-white tracking-tight">
+        <div className="p-3.5 border-b border-white/[0.06] flex items-start gap-3">
+          <div
+            className="shrink-0 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500/90 to-indigo-700/90 text-white shadow-md shadow-violet-950/40"
+            aria-hidden
+          >
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"
+              />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0 pt-0.5">
+            <h1 className="text-[15px] font-semibold text-white tracking-tight leading-tight">
               Planner Council
             </h1>
-            <p className="text-[11px] text-slate-500 leading-snug">
-              Multi-agent plans → <span className="text-violet-300">plan.md</span>
+            <p className="text-xs text-slate-500 leading-snug mt-0.5">
+              Council → research →{' '}
+              <span className="text-violet-300/95">plan.md</span>
             </p>
           </div>
         </div>
-        <div className="p-2">
+        <div className="p-2.5">
           <button
             type="button"
             onClick={() => void newChat()}
-            className="w-full rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.98] text-white text-sm font-medium py-2.5 px-3 shadow-lg shadow-violet-900/25 transition motion-reduce:transform-none"
+            className="w-full flex items-center justify-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.99] text-white text-sm font-medium py-2.5 px-3 shadow-lg shadow-violet-900/30 transition motion-reduce:transform-none"
           >
+            <svg
+              className="h-4 w-4 opacity-90"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+              aria-hidden
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
             New chat
           </button>
         </div>
@@ -539,10 +611,12 @@ export default function App() {
             </div>
           )}
           {!sessionsLoading && sessionList.length === 0 && (
-            <p className="text-xs text-slate-500 px-2 py-3 leading-relaxed">
-              No saved chats yet. Start one and it stays on this server so you can
-              pick it up anytime.
-            </p>
+            <div className="mx-1 rounded-xl border border-dashed border-slate-600/40 bg-slate-900/20 px-3 py-3.5 text-xs text-slate-500 leading-relaxed">
+              <p className="text-slate-400 font-medium text-[13px]">No sessions yet</p>
+              <p className="mt-1.5 text-slate-500">
+                Start a new chat — history is kept on this server so you can return anytime.
+              </p>
+            </div>
           )}
           {!sessionsLoading &&
             sessionList.map((s) => {
@@ -555,12 +629,13 @@ export default function App() {
                 onClick={() => void openSession(s.id)}
                 onKeyDown={(e) => e.key === 'Enter' && void openSession(s.id)}
                 className={`
-                  group w-full text-left rounded-xl px-2.5 py-2 pr-1 flex gap-1 items-start
-                  transition-colors focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/50
+                  group w-full text-left rounded-xl px-2.5 py-2.5 pr-1 flex gap-1 items-start
+                  transition-[background,border,box-shadow] duration-150
+                  focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/45 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0c0e14]
                   ${
                     active
-                      ? 'bg-violet-500/15 border border-violet-500/30 ring-1 ring-violet-500/10'
-                      : 'hover:bg-white/5 border border-transparent'
+                      ? 'bg-violet-500/[0.12] border border-violet-500/35 shadow-sm shadow-violet-950/20'
+                      : 'hover:bg-white/[0.04] border border-transparent hover:border-white/[0.06]'
                   }
                 `}
               >
@@ -613,7 +688,7 @@ export default function App() {
             )
           })}
         </div>
-        <div className="shrink-0 border-t border-white/5 p-2 space-y-1">
+        <div className="shrink-0 border-t border-white/[0.06] p-2.5">
           <button
             type="button"
             onClick={() => {
@@ -624,14 +699,30 @@ export default function App() {
               w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors
               ${
                 mainView === 'settings'
-                  ? 'bg-violet-500/20 text-violet-200 border border-violet-500/30'
-                  : 'text-slate-300 hover:bg-white/5 border border-transparent'
+                  ? 'bg-violet-500/18 text-violet-100 border border-violet-500/35'
+                  : 'text-slate-300 hover:bg-white/[0.05] border border-transparent hover:border-white/[0.06]'
               }
             `}
           >
-            Settings
-            <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
-              Ollama · agents
+            <span className="flex items-center gap-2">
+              <svg
+                className="h-4 w-4 text-slate-500 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                aria-hidden
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.6.9.55.45 1.162.86 1.82 1.22.32.19.55.5.6.9l.213 1.28c.09.54-.2 1.05-.67 1.3l-1.4.8c-.4.24-.6.7-.5 1.16.15.6.25 1.22.3 1.86.04.4.3.75.7.88l1.4.4c.5.15.9.57 1.05 1.1l.6 1.8c.15.5-.1 1.05-.55 1.3L18.1 20.1c-.45.3-1.02.2-1.4-.2l-1.15-1.1c-.32-.3-.8-.4-1.2-.2-.5.2-1.02.4-1.55.5-.4.1-.7.4-.8.8l-.3 1.2c-.1.5-.5.9-1 .95l-1.7.1c-.55.05-1.05-.3-1.2-.8l-.3-1.1c-.1-.45-.5-.8-1-.9-.2-.02-.4-.04-.6-.1-.1-.02-.2-.04-.3-.1l-1.2.5c-.5.2-1.1.05-1.4-.4l-1-1.4c-.3-.4-.25-1.05.1-1.4l.9-1.05c.25-.3.3-.7.1-1.1-.1-.2-.2-.4-.3-.6-.15-.4-.2-.8-.1-1.2l.3-1.2c.1-.4-.05-.85-.4-1.1l-1.2-.9c-.45-.35-.6-.95-.35-1.45l.6-1.8c.15-.5.6-.9 1.1-1.05l1.4-.4c.4-.1.7-.5.7-.9.05-.55.1-1.1.2-1.64.1-.4-.05-.85-.4-1.1L9.2 4.2c-.45-.3-.6-.9-.4-1.4L9.2 1.1c.1-.5.5-.9 1-.95H9.4zM12 15a3 3 0 100-6 3 3 0 000 6z"
+                />
+              </svg>
+              Settings
+            </span>
+            <span className="block text-[11px] font-normal text-slate-500 mt-0.5 pl-6">
+              Ollama and council agents
             </span>
           </button>
         </div>
@@ -642,10 +733,10 @@ export default function App() {
         aria-busy={busy && mainView === 'council'}
       >
         {mainView === 'council' && (
-          <header className="shrink-0 border-b border-white/5 bg-[#0b0c0f]/90 backdrop-blur-sm px-3 py-2 sm:px-4 flex flex-wrap items-center gap-2 z-10">
+          <header className="shrink-0 border-b border-white/[0.06] bg-[#090a0d]/85 backdrop-blur-md px-3 py-2.5 sm:px-4 flex flex-wrap items-center gap-2.5 z-10">
             <button
               type="button"
-              className="sm:hidden rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-xs text-slate-200 touch-manipulation"
+              className="sm:hidden rounded-lg border border-slate-600/50 bg-slate-900/50 px-2.5 py-2 text-xs font-medium text-slate-200 touch-manipulation"
               onClick={() => setSidebarOpen((o) => !o)}
               aria-expanded={sidebarOpen}
               aria-controls="session-sidebar"
@@ -653,32 +744,55 @@ export default function App() {
             >
               {sidebarOpen ? 'Close' : 'Chats'}
             </button>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-slate-200">Planner Council</div>
-              <p className="text-[10px] text-slate-500 leading-snug hidden sm:block">
-                Chats, research, and <span className="text-violet-300/90">plan.md</span>
+            <div className="min-w-0 flex-1 sm:flex-initial sm:min-w-0">
+              <div className="text-sm font-semibold text-slate-100 tracking-tight">
+                Council workspace
+              </div>
+              <p className="text-[11px] text-slate-500 leading-snug hidden sm:block mt-0.5">
+                Chat, research, and <span className="text-violet-300/90">plan output</span>
               </p>
             </div>
             <div
-              className={`h-2 w-2 rounded-full shrink-0 ${
-                ollamaOk
-                  ? 'bg-emerald-500'
-                  : oll?.reachable === false
-                    ? 'bg-rose-500'
-                    : 'bg-amber-500'
-              }`}
+              className={`
+                inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium max-w-[min(52vw,14rem)] shrink-0
+                ${
+                  ollamaOk
+                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200/95'
+                    : oll?.reachable === false
+                      ? 'border-rose-500/30 bg-rose-500/10 text-rose-200/90'
+                      : 'border-amber-500/30 bg-amber-500/10 text-amber-200/90'
+                }
+              `}
               title={
                 ollamaOk
                   ? `Ollama · ${oll?.model_count ?? 0} models`
                   : (oll?.error as string) || 'LLM status'
               }
-            />
-            <label className="flex items-center gap-1.5 min-w-0 shrink max-w-[min(46vw,11rem)] sm:max-w-[14rem]">
-              <span className="text-[10px] text-slate-500 uppercase tracking-wide hidden sm:inline">
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                  ollamaOk
+                    ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]'
+                    : oll?.reachable === false
+                      ? 'bg-rose-400'
+                      : 'bg-amber-400'
+                }`}
+                aria-hidden
+              />
+              <span className="truncate">
+                {ollamaOk
+                  ? `Ollama · ${oll?.model_count ?? 0} model${(oll?.model_count ?? 0) === 1 ? '' : 's'}`
+                  : oll?.reachable === false
+                    ? 'Ollama offline'
+                    : 'Checking…'}
+              </span>
+            </div>
+            <label className="flex items-center gap-2 min-w-0 grow sm:grow-0 sm:shrink sm:max-w-[min(50vw,16rem)]">
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium hidden sm:inline shrink-0">
                 Model
               </span>
               <select
-                className="min-w-0 flex-1 text-[11px] leading-tight py-1 px-2 rounded-md border border-slate-600/70 bg-slate-900/90 text-slate-200 focus:outline-none focus:ring-1 focus:ring-violet-500/40 disabled:opacity-40"
+                className="min-w-0 flex-1 text-xs leading-tight py-1.5 px-2.5 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/35 focus:ring-offset-0 disabled:opacity-40"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 disabled={busy}
@@ -703,7 +817,7 @@ export default function App() {
                 setMainView('settings')
                 setSidebarOpen(false)
               }}
-              className="text-xs rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-slate-200 hover:bg-white/5 shrink-0"
+              className="text-xs font-medium rounded-lg border border-slate-600/50 bg-slate-900/40 px-3 py-1.5 text-slate-200 hover:bg-white/[0.06] shrink-0"
             >
               Settings
             </button>
@@ -711,8 +825,8 @@ export default function App() {
         )}
 
         {mainView === 'council' && (ollamaHostReachable || modelHint) && (
-          <div className="shrink-0 mx-3 mt-2 flex flex-wrap items-center gap-2 text-xs text-amber-200/90 rounded-lg border border-amber-500/20 bg-amber-950/20 px-2 py-1.5">
-            <span className="min-w-0 flex-1 leading-snug">
+          <div className="shrink-0 mx-3 mt-2 flex flex-wrap items-center gap-2.5 text-xs text-amber-100/95 rounded-xl border border-amber-500/25 bg-amber-950/30 px-3 py-2.5 shadow-sm">
+            <span className="min-w-0 flex-1 leading-relaxed text-[13px]">
               {modelHint ||
                 (ollamaHostReachable
                   ? 'Ollama is up but no text models are listed.'
@@ -759,55 +873,66 @@ export default function App() {
         <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
           {/* Messages */}
           <div className="flex-1 flex flex-col min-w-0 min-h-0 border-b lg:border-b-0 lg:border-r border-white/5">
-            <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 text-[10px] text-slate-500 uppercase tracking-wide border-b border-white/5">
+            <div className="shrink-0 flex items-center justify-between gap-2 px-3 sm:px-4 py-2.5 border-b border-white/[0.06] bg-[#08090c]/50">
               <div className="min-w-0 flex-1">
-                <div className="text-[9px] font-medium text-slate-500">Chat</div>
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+                  Conversation
+                </div>
                 {sessionId && (
-                  <div className="mt-0.5 normal-case text-xs text-slate-200/90 font-medium line-clamp-1 tracking-normal">
+                  <div className="mt-1 text-sm text-slate-100 font-medium line-clamp-1 pr-1">
                     {currentSessionTitle || 'New session'}
                   </div>
                 )}
               </div>
               {sessionId && (
-                <span
-                  className="text-slate-600 font-mono text-[9px] truncate max-w-[5rem] sm:max-w-[10rem] shrink-0"
-                  title={sessionId}
-                >
-                  {sessionId}
-                </span>
-              )}
-              {phase && (
-                <span
-                  className="text-violet-300/90 normal-case text-[9px] max-w-[7rem] truncate"
-                  title={phase}
-                >
-                  {phase}
-                </span>
+                <div className="flex flex-col items-end gap-0.5 shrink-0 min-w-0">
+                  {phase && (
+                    <span
+                      className="text-[10px] font-medium text-violet-300/95 max-w-[9rem] sm:max-w-[12rem] truncate text-right"
+                      title={phase}
+                    >
+                      {phase}
+                    </span>
+                  )}
+                  <span
+                    className="text-slate-600 font-mono text-[10px] truncate max-w-[4.5rem] sm:max-w-[9rem] hidden sm:block"
+                    title={sessionId}
+                  >
+                    {sessionId}
+                  </span>
+                </div>
               )}
             </div>
             <div
               ref={scrollRef}
-              className="flex-1 min-h-0 overflow-y-auto scroll-smooth scroll-pb-4 px-3 sm:px-4 py-3 space-y-3 [scrollbar-gutter:stable]"
+              className="flex-1 min-h-0 overflow-y-auto scroll-smooth scroll-pb-4 px-3 sm:px-4 py-4 space-y-3.5 [scrollbar-gutter:stable]"
             >
               {feed.length === 0 && !sessionId && (
-                <div className="rounded-2xl border border-dashed border-slate-600/35 bg-gradient-to-b from-slate-900/40 to-slate-950/30 p-6 sm:p-8 text-left max-w-md mx-auto">
-                  <p className="text-slate-200 text-sm font-semibold">Start a council run</p>
-                  <ol className="text-slate-500 text-xs mt-3 space-y-2 list-decimal list-inside leading-relaxed">
+                <div className="rounded-2xl border border-slate-600/30 bg-gradient-to-b from-slate-900/50 to-slate-950/40 p-6 sm:p-8 text-left max-w-md mx-auto shadow-lg shadow-black/20">
+                  <p className="text-slate-100 text-base font-semibold tracking-tight">
+                    Start a council run
+                  </p>
+                  <p className="text-slate-500 text-sm mt-2 leading-relaxed">
+                    The council debates, pulls research, then writes a structured plan.
+                  </p>
+                  <ol className="text-slate-400 text-sm mt-4 space-y-2.5 list-decimal list-inside leading-relaxed">
                     <li>
-                      Use <span className="text-slate-300">New chat</span> in the sidebar
+                      Click <span className="text-slate-200 font-medium">New chat</span> in the sidebar
                     </li>
-                    <li>Choose a <span className="text-slate-300">text</span> chat model (not image-only)</li>
-                    <li>Describe what you want built — the rest happens in the feed</li>
+                    <li>
+                      Pick a <span className="text-slate-200 font-medium">text</span> model in the header
+                    </li>
+                    <li>Describe what you want — updates stream into this thread</li>
                   </ol>
-                  <p className="text-slate-600 text-[11px] mt-4">
-                    Chats are stored in the API server&apos;s{' '}
-                    <code className="text-slate-500">SQLite</code> database.
+                  <p className="text-slate-500 text-xs mt-5 pt-4 border-t border-white/[0.06]">
+                    History is stored in the API&apos;s <code className="text-slate-400">SQLite</code>{' '}
+                    database.
                   </p>
                 </div>
               )}
               {feed.length === 0 && sessionId && (
-                <p className="text-slate-500 text-sm text-center max-w-sm mx-auto">
-                  Send a message to continue, or open another chat from the list.
+                <p className="text-slate-500 text-sm text-center max-w-sm mx-auto leading-relaxed">
+                  Send a message to continue, or choose another chat in the list.
                 </p>
               )}
               {feed.map((f) => {
@@ -816,18 +941,14 @@ export default function App() {
                 return (
                   <article
                     key={f.id}
-                    className={`max-w-2xl rounded-2xl px-3.5 py-2.5 ${
-                      isUser
-                        ? 'ml-auto max-w-[min(100%,36rem)] bg-violet-500/10 border border-violet-500/20'
-                        : isErr
-                          ? 'bg-rose-500/5 border border-rose-500/25'
-                          : 'max-w-3xl bg-slate-800/40 border border-slate-700/40'
-                    }`}
+                    className={`max-w-2xl rounded-2xl px-3.5 py-3 ${feedItemShell(f.kind, isUser, isErr)}`}
                   >
                     <div
-                      className={`text-[10px] font-semibold tracking-wide uppercase ${
-                        isUser ? 'text-violet-300' : 'text-slate-400'
-                      }`}
+                      className={`text-[11px] font-semibold tracking-tight ${feedTitleClass(
+                        f.kind,
+                        isUser,
+                        isErr
+                      )}`}
                     >
                       {f.title}
                     </div>
@@ -851,29 +972,29 @@ export default function App() {
               })}
               {busy && (
                 <div
-                  className="rounded-xl border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200/90 flex items-center gap-2"
+                  className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3.5 py-2.5 text-sm text-violet-100/95 flex items-center gap-2.5"
                   role="status"
                   aria-live="polite"
                 >
                   <span className="flex gap-0.5" aria-hidden>
-                    <span className="size-1.5 rounded-full bg-violet-400 animate-bounce [animation-delay:-0.2s]" />
-                    <span className="size-1.5 rounded-full bg-violet-400 animate-bounce" />
-                    <span className="size-1.5 rounded-full bg-violet-400 animate-bounce [animation-delay:0.2s]" />
+                    <span className="size-1.5 rounded-full bg-violet-300 animate-bounce [animation-delay:-0.2s]" />
+                    <span className="size-1.5 rounded-full bg-violet-300 animate-bounce" />
+                    <span className="size-1.5 rounded-full bg-violet-300 animate-bounce [animation-delay:0.2s]" />
                   </span>
                   Council is working…
                 </div>
               )}
             </div>
 
-            <div className="shrink-0 p-3 border-t border-white/5 bg-[#0a0a0c]/80">
-              <div className="max-w-3xl mx-auto flex gap-2">
-                <div className="flex-1 min-w-0 flex flex-col gap-1">
+            <div className="shrink-0 p-3 sm:p-4 border-t border-white/[0.06] bg-[#07080b]/90 backdrop-blur-sm">
+              <div className="max-w-3xl mx-auto flex flex-col sm:flex-row gap-2.5 sm:items-end sm:gap-3">
+                <div className="flex-1 min-w-0 flex flex-col gap-1.5">
                   <textarea
                     ref={composerRef}
-                    className={`w-full min-h-[44px] max-h-32 rounded-xl border bg-slate-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-violet-500/35 disabled:opacity-50 ${
+                    className={`w-full min-h-[48px] max-h-36 rounded-xl border bg-slate-950/70 px-3.5 py-3 text-sm text-slate-100 placeholder:text-slate-500 shadow-inner shadow-black/20 focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-violet-500/40 disabled:opacity-50 resize-y ${
                       awaiting
-                        ? 'border-amber-500/40 ring-1 ring-amber-500/20'
-                        : 'border-slate-600/70'
+                        ? 'border-amber-500/50 ring-1 ring-amber-500/15'
+                        : 'border-slate-600/60'
                     }`}
                     placeholder={
                       awaiting
@@ -892,19 +1013,24 @@ export default function App() {
                     rows={2}
                     aria-label="Message"
                   />
-                  <p className="text-[10px] text-slate-500 px-0.5">
-                    Markdown is ok in chat. <kbd className="kbd-hint">Enter</kbd> send ·{' '}
+                  <p className="text-[11px] text-slate-500 px-0.5 leading-relaxed">
+                    Markdown supported. <kbd className="kbd-hint">Enter</kbd> send ·{' '}
                     <kbd className="kbd-hint">Shift+Enter</kbd> newline
-                    {busy && ' · run in progress — Stop if you need to change something'}
+                    {busy && (
+                      <span className="text-amber-200/80">
+                        {' '}
+                        · run in progress — use Stop to cancel
+                      </span>
+                    )}
                   </p>
                 </div>
-                <div className="flex flex-col gap-1.5 shrink-0">
+                <div className="flex sm:flex-col gap-2 sm:gap-1.5 shrink-0 w-full sm:w-auto">
                   <button
                     type="button"
                     onClick={() => void onSend()}
                     disabled={busy || !input.trim() || !model}
                     title="Send (Enter)"
-                    className="rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.98] disabled:opacity-30 disabled:hover:bg-violet-600 px-4 py-2 text-sm font-medium text-white motion-reduce:transform-none"
+                    className="flex-1 sm:flex-initial rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.99] disabled:opacity-35 disabled:hover:bg-violet-600 px-4 py-2.5 sm:px-5 text-sm font-medium text-white shadow-md shadow-violet-950/30 motion-reduce:transform-none"
                   >
                     Send
                   </button>
@@ -912,7 +1038,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={stopStream}
-                      className="text-xs text-slate-400 hover:text-white underline-offset-2 hover:underline"
+                      className="text-sm text-slate-400 hover:text-white py-2 sm:py-0 underline-offset-2 hover:underline"
                     >
                       Stop
                     </button>
@@ -924,33 +1050,33 @@ export default function App() {
 
           {/* Plan + research panel */}
           <div
-            className="w-full lg:w-[min(100%,24rem)] shrink-0 flex flex-col min-h-0 max-h-[min(50dvh,22rem)] lg:max-h-none border-t lg:border-t-0 lg:border-l border-white/5 bg-[#0a0b0e]"
+            className="w-full lg:w-[min(100%,26rem)] shrink-0 flex flex-col min-h-0 max-h-[min(46dvh,24rem)] lg:max-h-none border-t lg:border-t-0 lg:border-l border-white/[0.06] bg-[#08090c]"
             role="complementary"
             aria-label="Research and plan"
           >
-            <div className="hidden lg:block shrink-0 px-3 py-1.5 text-[10px] text-slate-500 uppercase border-b border-white/5">
-              Research &amp; plan
-            </div>
             <div
-              className="shrink-0 flex lg:hidden border-b border-white/5"
+              className="shrink-0 flex border-b border-white/[0.06] bg-[#0a0b0e]/80 p-1 gap-0.5"
               role="tablist"
-              aria-label="Panel section"
+              aria-label="Output panel"
             >
               <button
                 type="button"
                 role="tab"
                 id="tab-research"
                 aria-selected={rightPanelTab === 'research'}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors ${
                   rightPanelTab === 'research'
-                    ? 'text-violet-200 border-b-2 border-violet-500 bg-violet-500/5'
-                    : 'text-slate-500 border-b-2 border-transparent'
+                    ? 'text-violet-100 bg-violet-500/20 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
                 }`}
                 onClick={() => setRightPanelTab('research')}
               >
                 Research
                 {research && (
-                  <span className="ml-1.5 inline-flex size-1.5 rounded-full bg-emerald-400" />
+                  <span
+                    className="inline-flex size-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.45)]"
+                    title="Has content"
+                  />
                 )}
               </button>
               <button
@@ -958,82 +1084,86 @@ export default function App() {
                 role="tab"
                 id="tab-plan"
                 aria-selected={rightPanelTab === 'plan'}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors ${
                   rightPanelTab === 'plan'
-                    ? 'text-violet-200 border-b-2 border-violet-500 bg-violet-500/5'
-                    : 'text-slate-500 border-b-2 border-transparent'
+                    ? 'text-violet-100 bg-violet-500/20 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
                 }`}
                 onClick={() => setRightPanelTab('plan')}
               >
                 Plan
                 {planMd && (
-                  <span className="ml-1.5 inline-flex size-1.5 rounded-full bg-violet-400" />
+                  <span
+                    className="inline-flex size-1.5 rounded-full bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.4)]"
+                    title="Has content"
+                  />
                 )}
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4">
               <div
-                className={`
-                ${rightPanelTab === 'research' ? 'block' : 'hidden'} lg:block
-              `}
+                className={rightPanelTab === 'research' ? 'block' : 'hidden'}
                 role="tabpanel"
                 aria-labelledby="tab-research"
               >
                 {research ? (
                   <div>
-                    <h3 className="text-xs font-medium text-slate-300">Sources</h3>
-                    <ul className="mt-1.5 text-[11px] text-slate-500 space-y-1 max-h-32 lg:max-h-24 overflow-y-auto">
+                    <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                      Sources
+                    </h3>
+                    <ul className="mt-2 text-xs text-slate-400 space-y-1.5 max-h-36 lg:max-h-28 overflow-y-auto">
                       {research.sources?.slice(0, 12).map((s) => (
                         <li key={s.href}>
                           <a
                             href={s.href}
                             target="_blank"
                             rel="noreferrer"
-                            className="text-violet-400/90 hover:underline line-clamp-1"
+                            className="text-violet-300/90 hover:text-violet-200 hover:underline line-clamp-2 leading-snug"
                           >
                             {s.title || s.href}
                           </a>
                         </li>
                       ))}
                     </ul>
-                    <div className="mt-2 text-slate-300/95">
+                    <div className="mt-3 pt-3 border-t border-white/[0.06] text-slate-200/95">
                       <MessageMarkdown text={research.brief} size="panel" />
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Web research summaries show here while the run collects sources.
-                  </p>
+                  <div className="rounded-xl border border-dashed border-slate-600/35 bg-slate-900/20 px-3 py-4">
+                    <p className="text-sm text-slate-400 leading-relaxed">
+                      Research briefs and source links show here while the run collects context.
+                    </p>
+                  </div>
                 )}
               </div>
               <div
-                className={`
-                border-t border-white/5 pt-3
-                ${rightPanelTab === 'plan' ? 'block' : 'hidden'} lg:block lg:border-t-0 lg:pt-0
-              `}
+                className={rightPanelTab === 'plan' ? 'block' : 'hidden'}
                 role="tabpanel"
                 aria-labelledby="tab-plan"
               >
-                <div className="flex justify-between items-center gap-2 mb-2">
-                  <h3 className="text-xs font-medium text-slate-200">plan.md</h3>
+                <div className="flex justify-between items-center gap-2 mb-2.5">
+                  <h3 className="text-sm font-semibold text-slate-100">Plan document</h3>
                   {planMd && (
                     <button
                       type="button"
                       onClick={downloadPlan}
-                      className="text-[10px] rounded-md border border-violet-500/30 px-2 py-1 text-violet-200 hover:bg-violet-500/10"
+                      className="text-xs font-medium rounded-lg border border-violet-500/35 bg-violet-500/10 px-2.5 py-1.5 text-violet-200 hover:bg-violet-500/20"
                     >
                       Download
                     </button>
                   )}
                 </div>
                 {planMd ? (
-                  <div className="max-h-[min(40dvh,18rem)] lg:max-h-[56vh] overflow-y-auto rounded-lg border border-slate-700/35 bg-slate-950/30 p-2">
+                  <div className="max-h-[min(36dvh,16rem)] lg:max-h-[min(60vh,28rem)] overflow-y-auto rounded-xl border border-slate-700/40 bg-slate-950/40 p-3 shadow-inner">
                     <MessageMarkdown text={planMd} size="panel" />
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500">
-                    The structured plan appears here when the council finishes a pass.
-                  </p>
+                  <div className="rounded-xl border border-dashed border-slate-600/35 bg-slate-900/20 px-3 py-4">
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      The structured plan will appear when the council finishes a synthesis pass.
+                    </p>
+                  </div>
                 )}
               </div>
             </div>
