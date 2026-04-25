@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     )
 
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "llama3.2"
+    # Fallback only when no model is selected and /api/tags is empty; prefer UI + `ollama list`
+    ollama_model: str = ""
     llm_provider: Literal["ollama", "openai", "anthropic"] = "ollama"
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"

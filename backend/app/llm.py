@@ -43,9 +43,18 @@ async def complete_chat(
 ) -> str:
     """Non-streaming completion for JSON / structured output."""
     provider = settings.llm_provider
-    m = model or (settings.ollama_model if provider == "ollama" else None)
+    m = (model or "").strip() or (
+        (settings.ollama_model or "").strip() if provider == "ollama" else None
+    )
     if provider == "ollama":
-        return await _ollama_chat(settings, list(messages), m or settings.ollama_model, stream=False, temperature=temperature)
+        if not m:
+            raise RuntimeError(
+                "No Ollama model is set. Choose a model in the app (from your `ollama list`) "
+                "or set OLLAMA_MODEL in .env to that exact name."
+            )
+        return await _ollama_chat(
+            settings, list(messages), m, stream=False, temperature=temperature
+        )
     if provider == "openai":
         return await _openai_chat(
             settings,

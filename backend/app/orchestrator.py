@@ -47,7 +47,9 @@ def _filename_from_title(title: str) -> str:
     return f"{t}.md"
 
 
-async def _generate_search_plan(settings: Settings, user_brief: str) -> dict[str, Any]:
+async def _generate_search_plan(
+    settings: Settings, user_brief: str, model: str
+) -> dict[str, Any]:
     system = "You are a research planner. Return JSON only."
     user = f"""User idea:
 {user_brief}
@@ -56,7 +58,7 @@ Return JSON: {{"queries": ["q1", ...], "urls_to_fetch": []}}
 - queries: 1-3 short web search queries, or fewer if the idea is fully specified.
 - urls_to_fetch: 0-2 full https URLs to read for context, or [].
 """
-    return await complete_structured_json(settings, system, user)
+    return await complete_structured_json(settings, system, user, model=model)
 
 
 def _search_only(settings: Settings, queries: list[str]) -> list[dict[str, str]]:
@@ -80,6 +82,7 @@ async def _summarize_research(
     user_brief: str,
     sources: list[dict[str, str]],
     fetches: list[dict[str, Any]],
+    model: str,
 ) -> str:
     src_txt = "\n".join(
         f"- {s.get('title','')}: {s.get('href','')}\n  {s.get('body','')[:300]}"
@@ -95,6 +98,7 @@ async def _summarize_research(
     return await complete_chat(
         settings,
         [_msg_system(system), _msg_user(user)],
+        model=model,
         temperature=0.2,
     )
 
@@ -306,7 +310,7 @@ async def run_council_pipeline(
             s.last_consolidated_questions = []
 
             yield {"type": "phase", "phase": SessionPhase.research.value}
-            sp = await _generate_search_plan(settings, s.user_brief)
+            sp = await _generate_search_plan(settings, s.user_brief, s.model)
             qlist = [str(x) for x in (sp.get("queries") or []) if str(x).strip()][: settings.research_max_queries]
             if not qlist and s.user_brief.strip():
                 first = s.user_brief.strip().split("\n", 1)[0].strip()[:200]
@@ -321,7 +325,9 @@ async def run_council_pipeline(
                 {"title": r.get("title", ""), "href": r.get("href", ""), "body": (r.get("body", "") or "")[:400]}
                 for r in sources
             ]
-            s.research_brief = await _summarize_research(settings, s.user_brief, sources, fetches)
+            s.research_brief = await _summarize_research(
+                settings, s.user_brief, sources, fetches, s.model
+            )
             s.messages.append(
                 ChatMessage(
                     role="assistant",
