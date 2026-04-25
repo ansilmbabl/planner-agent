@@ -13,6 +13,8 @@ export type HealthResponse = {
   service?: string
   llm_provider?: string
   ollama?: OllamaProbe
+  /** e.g. "sqlite" — session storage backend */
+  persistence?: string
 }
 
 export type ModelsResponse = {

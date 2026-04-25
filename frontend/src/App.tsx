@@ -20,6 +20,7 @@ import {
   streamUserMessage,
 } from './api'
 import { MessageMarkdown } from './components/MessageMarkdown'
+import { SettingsChat } from './components/SettingsChat'
 
 type FeedItem = {
   id: string
@@ -147,6 +148,7 @@ export default function App() {
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [rightPanelTab, setRightPanelTab] = useState<'research' | 'plan'>('plan')
+  const [mainView, setMainView] = useState<'council' | 'settings'>('council')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [feed, setFeed] = useState<FeedItem[]>([])
@@ -283,6 +285,7 @@ export default function App() {
         const data = await getSession(id)
         setSessionId(id)
         hydrateFromApi(data)
+        setMainView('council')
         setSidebarOpen(false)
         composerRef.current?.focus()
       } catch (e) {
@@ -305,6 +308,7 @@ export default function App() {
       setSessionId(s.id)
       clearWorkspace()
       await loadSessionList()
+      setMainView('council')
       setSidebarOpen(false)
       composerRef.current?.focus()
     } catch (e) {
@@ -584,84 +588,128 @@ export default function App() {
             )
           })}
         </div>
-      </aside>
-
-      <div className="flex-1 flex flex-col min-w-0 min-h-0" aria-busy={busy}>
-        {/* Top bar */}
-        <header className="shrink-0 border-b border-white/5 bg-[#0b0c0f]/90 backdrop-blur-sm px-3 py-2 sm:px-4 flex flex-wrap items-center gap-2 z-10">
+        <div className="shrink-0 border-t border-white/5 p-2 space-y-1">
           <button
             type="button"
-            className="sm:hidden rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-xs text-slate-200 touch-manipulation"
-            onClick={() => setSidebarOpen((o) => !o)}
-            aria-expanded={sidebarOpen}
-            aria-controls="session-sidebar"
-            aria-label={sidebarOpen ? 'Close chat list' : 'Open chat list'}
+            onClick={() => {
+              setMainView('settings')
+              setSidebarOpen(false)
+            }}
+            className={`
+              w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors
+              ${
+                mainView === 'settings'
+                  ? 'bg-violet-500/20 text-violet-200 border border-violet-500/30'
+                  : 'text-slate-300 hover:bg-white/5 border border-transparent'
+              }
+            `}
           >
-            {sidebarOpen ? 'Close' : 'Chats'}
+            Settings
+            <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
+              Ollama, model, storage
+            </span>
           </button>
-          <div
-            className={`hidden sm:block h-2 w-2 rounded-full shrink-0 ${
-              ollamaOk ? 'bg-emerald-500' : oll?.reachable === false ? 'bg-rose-500' : 'bg-amber-500'
-            }`}
-          />
-          <span className="text-xs text-slate-400 hidden sm:inline">
-            {ollamaOk
-              ? `${oll?.model_count} models · ${oll?.base_url}`
-              : oll?.error || 'Ollama status…'}
-          </span>
-          <div className="ml-auto flex items-center gap-2 flex-wrap">
-            <label className="text-[10px] uppercase text-slate-500 font-medium">
-              Model
-              <select
-                className="ml-1.5 block mt-0.5 rounded-lg border border-slate-600/80 bg-slate-900/90 px-2 py-1.5 text-xs text-slate-100 min-w-[10rem] max-w-[14rem] focus:ring-1 focus:ring-violet-500/50"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                disabled={busy}
-              >
-                {models.length === 0 && (
-                  <option value="" disabled>
-                    No models
-                  </option>
-                )}
-                {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </label>
+        </div>
+      </aside>
+
+      <div
+        className="flex-1 flex flex-col min-w-0 min-h-0"
+        aria-busy={busy && mainView === 'council'}
+      >
+        {mainView === 'council' && (
+          <header className="shrink-0 border-b border-white/5 bg-[#0b0c0f]/90 backdrop-blur-sm px-3 py-2 sm:px-4 flex flex-wrap items-center gap-2 z-10">
+            <button
+              type="button"
+              className="sm:hidden rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-xs text-slate-200 touch-manipulation"
+              onClick={() => setSidebarOpen((o) => !o)}
+              aria-expanded={sidebarOpen}
+              aria-controls="session-sidebar"
+              aria-label={sidebarOpen ? 'Close chat list' : 'Open chat list'}
+            >
+              {sidebarOpen ? 'Close' : 'Chats'}
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold text-slate-200">Planner Council</div>
+              <p className="text-[10px] text-slate-500 leading-snug hidden sm:block">
+                Chats, research, and <span className="text-violet-300/90">plan.md</span>
+              </p>
+            </div>
+            <div
+              className={`h-2 w-2 rounded-full shrink-0 ${
+                ollamaOk
+                  ? 'bg-emerald-500'
+                  : oll?.reachable === false
+                    ? 'bg-rose-500'
+                    : 'bg-amber-500'
+              }`}
+              title={
+                ollamaOk
+                  ? `Ollama · ${oll?.model_count ?? 0} models`
+                  : (oll?.error as string) || 'LLM status'
+              }
+            />
             <button
               type="button"
               onClick={() => {
+                setMainView('settings')
+                setSidebarOpen(false)
+              }}
+              className="text-xs rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-slate-200 hover:bg-white/5"
+            >
+              Settings
+            </button>
+          </header>
+        )}
+
+        {mainView === 'council' && (ollamaHostReachable || modelHint) && (
+          <div className="shrink-0 mx-3 mt-2 flex flex-wrap items-center gap-2 text-xs text-amber-200/90 rounded-lg border border-amber-500/20 bg-amber-950/20 px-2 py-1.5">
+            <span className="min-w-0 flex-1 leading-snug">
+              {modelHint ||
+                (ollamaHostReachable
+                  ? 'Ollama is up but no text models are listed.'
+                  : '')}
+            </span>
+            <button
+              type="button"
+              className="shrink-0 text-amber-100 underline underline-offset-2"
+              onClick={() => {
+                setMainView('settings')
+                setSidebarOpen(false)
+              }}
+            >
+              Open Settings
+            </button>
+            {modelHint && (
+              <button
+                type="button"
+                className="shrink-0 text-slate-500 hover:text-slate-300"
+                onClick={() => setModelHint(null)}
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        )}
+
+        {mainView === 'settings' ? (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+            <SettingsChat
+              health={health}
+              modelHint={modelHint}
+              ollamaHostReachable={ollamaHostReachable}
+              models={models}
+              model={model}
+              onModelChange={setModel}
+              onRefresh={() => {
                 void refreshConnection()
                 void loadSessionList()
               }}
-              className="text-xs text-violet-400 hover:underline"
-            >
-              Refresh
-            </button>
+              busy={busy}
+              onBack={() => setMainView('council')}
+              onOpenSidebar={() => setSidebarOpen(true)}
+            />
           </div>
-        </header>
-
-        {ollamaHostReachable && (
-          <div className="shrink-0 mx-3 mt-2 text-amber-200/80 text-xs rounded-lg border border-amber-500/20 bg-amber-950/20 px-2 py-1.5">
-            No models in Ollama — run <code className="text-amber-100">ollama pull &lt;name&gt;</code>
-          </div>
-        )}
-
-        {modelHint && (
-          <div className="shrink-0 mx-3 mt-2 text-amber-200/90 text-xs rounded-lg border border-amber-500/25 bg-amber-950/20 px-2 py-1.5">
-            {modelHint}
-            <button
-              type="button"
-              className="ml-2 text-amber-100 underline"
-              onClick={() => setModelHint(null)}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
+        ) : (
         <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
           {/* Messages */}
           <div className="flex-1 flex flex-col min-w-0 min-h-0 border-b lg:border-b-0 lg:border-r border-white/5">
@@ -706,8 +754,8 @@ export default function App() {
                     <li>Describe what you want built — the rest happens in the feed</li>
                   </ol>
                   <p className="text-slate-600 text-[11px] mt-4">
-                    Chats are stored in{' '}
-                    <code className="text-slate-500">data/sessions/</code> on the server.
+                    Chats are stored in the API server&apos;s{' '}
+                    <code className="text-slate-500">SQLite</code> database.
                   </p>
                 </div>
               )}
@@ -945,6 +993,7 @@ export default function App() {
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   )
