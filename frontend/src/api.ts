@@ -84,6 +84,40 @@ export type SseEvent =
   | { type: 'stream_end' }
   | Record<string, unknown>
 
+export type AgentDef = {
+  id: string
+  name: string
+  title: string
+  system_prompt: string
+  tools_enabled: boolean
+}
+
+export type CouncilConfig = {
+  debating_agents: AgentDef[]
+  synthesizer: AgentDef | null
+}
+
+export async function getCouncil(): Promise<CouncilConfig> {
+  const r = await fetch(`${API}/council`)
+  if (!r.ok) throw new Error(`council: ${r.status}`)
+  return r.json()
+}
+
+export async function putCouncil(
+  config: CouncilConfig
+): Promise<{ status: string; path?: string }> {
+  const r = await fetch(`${API}/council`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `council save: ${r.status}`)
+  }
+  return r.json()
+}
+
 export async function getHealth(): Promise<HealthResponse> {
   const r = await fetch(`${API}/health`)
   if (!r.ok) throw new Error(`health: ${r.status}`)

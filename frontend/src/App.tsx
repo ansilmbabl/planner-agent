@@ -631,7 +631,7 @@ export default function App() {
           >
             Settings
             <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
-              Connection
+              Ollama · agents
             </span>
           </button>
         </div>

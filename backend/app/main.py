@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .council_config import load_council_config
+from .council_config import CouncilConfigFile, load_council_config, save_council_config
 from .config import get_settings
 from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
@@ -85,6 +85,25 @@ async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> st
     else:
         s.model = settings.anthropic_model
     return s.model
+
+
+@app.get("/api/council", response_model=None)
+async def get_council() -> dict[str, Any]:
+    c = _require_council()
+    return c.model_dump(mode="json")
+
+
+@app.put("/api/council", response_model=None)
+async def put_council(body: CouncilConfigFile) -> dict[str, str]:
+    """Replace council.json on disk. Next pipeline run uses the new config."""
+    settings = get_settings()
+    p = settings.council_config_path
+    try:
+        save_council_config(p, body)
+    except OSError as e:
+        log.error("Could not write council config: %s", e)
+        raise HTTPException(500, f"Could not save council config: {e}") from e
+    return {"status": "ok", "path": str(p)}
 
 
 @app.get("/api/health")
