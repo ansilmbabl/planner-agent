@@ -19,6 +19,7 @@ import {
   type SseEvent,
   streamUserMessage,
 } from './api'
+import { MessageMarkdown } from './components/MessageMarkdown'
 
 type FeedItem = {
   id: string
@@ -69,7 +70,7 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     return {
       kind: 'await',
       title: 'Your input',
-      body: e.questions.map((q) => `• ${q}`).join('\n'),
+      body: e.questions.map((q) => `- ${q}`).join('\n'),
     }
   }
   if (t === 'synth') {
@@ -585,7 +586,7 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0" aria-busy={busy}>
         {/* Top bar */}
         <header className="shrink-0 border-b border-white/5 bg-[#0b0c0f]/90 backdrop-blur-sm px-3 py-2 sm:px-4 flex flex-wrap items-center gap-2 z-10">
           <button
@@ -692,7 +693,7 @@ export default function App() {
             </div>
             <div
               ref={scrollRef}
-              className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 py-3 space-y-3"
+              className="flex-1 min-h-0 overflow-y-auto scroll-smooth scroll-pb-4 px-3 sm:px-4 py-3 space-y-3 [scrollbar-gutter:stable]"
             >
               {feed.length === 0 && !sessionId && (
                 <div className="rounded-2xl border border-dashed border-slate-600/35 bg-gradient-to-b from-slate-900/40 to-slate-950/30 p-6 sm:p-8 text-left max-w-md mx-auto">
@@ -715,31 +716,45 @@ export default function App() {
                   Send a message to continue, or open another chat from the list.
                 </p>
               )}
-              {feed.map((f) => (
-                <article
-                  key={f.id}
-                  className={`max-w-2xl rounded-2xl px-3.5 py-2.5 ${
-                    f.title === 'You'
-                      ? 'ml-auto bg-violet-500/10 border border-violet-500/20'
-                      : f.kind === 'err'
-                        ? 'bg-rose-500/5 border border-rose-500/25'
-                        : 'bg-slate-800/40 border border-slate-700/40'
-                  }`}
-                >
-                  <div
-                    className={`text-[10px] font-semibold tracking-wide uppercase ${
-                      f.title === 'You' ? 'text-violet-300' : 'text-slate-400'
+              {feed.map((f) => {
+                const isUser = f.title === 'You'
+                const isErr = f.kind === 'err'
+                return (
+                  <article
+                    key={f.id}
+                    className={`max-w-2xl rounded-2xl px-3.5 py-2.5 ${
+                      isUser
+                        ? 'ml-auto max-w-[min(100%,36rem)] bg-violet-500/10 border border-violet-500/20'
+                        : isErr
+                          ? 'bg-rose-500/5 border border-rose-500/25'
+                          : 'max-w-3xl bg-slate-800/40 border border-slate-700/40'
                     }`}
                   >
-                    {f.title}
-                  </div>
-                  {f.body && (
-                    <p className="text-slate-200/95 mt-1.5 text-sm leading-relaxed whitespace-pre-wrap">
-                      {f.body}
-                    </p>
-                  )}
-                </article>
-              ))}
+                    <div
+                      className={`text-[10px] font-semibold tracking-wide uppercase ${
+                        isUser ? 'text-violet-300' : 'text-slate-400'
+                      }`}
+                    >
+                      {f.title}
+                    </div>
+                    {f.body && (
+                      <div
+                        className={
+                          isUser
+                            ? '[&_a]:text-violet-300 [&_a]:decoration-violet-400/40'
+                            : undefined
+                        }
+                      >
+                        <MessageMarkdown
+                          text={f.body}
+                          plain={isErr}
+                          size="message"
+                        />
+                      </div>
+                    )}
+                  </article>
+                )
+              })}
               {busy && (
                 <div
                   className="rounded-xl border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200/90 flex items-center gap-2"
@@ -758,34 +773,44 @@ export default function App() {
 
             <div className="shrink-0 p-3 border-t border-white/5 bg-[#0a0a0c]/80">
               <div className="max-w-3xl mx-auto flex gap-2">
-                <textarea
-                  ref={composerRef}
-                  className={`flex-1 min-h-[44px] max-h-32 rounded-xl border bg-slate-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-violet-500/35 disabled:opacity-50 ${
-                    awaiting
-                      ? 'border-amber-500/40 ring-1 ring-amber-500/20'
-                      : 'border-slate-600/70'
-                  }`}
-                  placeholder={
-                    awaiting
-                      ? 'Reply to the council (they asked a question)…'
-                      : 'Describe the idea — Enter to send, Shift+Enter for a new line'
-                  }
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      if (!busy) void onSend()
+                <div className="flex-1 min-w-0 flex flex-col gap-1">
+                  <textarea
+                    ref={composerRef}
+                    className={`w-full min-h-[44px] max-h-32 rounded-xl border bg-slate-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-violet-500/35 disabled:opacity-50 ${
+                      awaiting
+                        ? 'border-amber-500/40 ring-1 ring-amber-500/20'
+                        : 'border-slate-600/70'
+                    }`}
+                    placeholder={
+                      awaiting
+                        ? 'Reply to the council (they asked a question)…'
+                        : 'Describe your goal or answer the council…'
                     }
-                  }}
-                  disabled={busy}
-                />
-                <div className="flex flex-col gap-1.5">
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        if (!busy) void onSend()
+                      }
+                    }}
+                    disabled={busy}
+                    rows={2}
+                    aria-label="Message"
+                  />
+                  <p className="text-[10px] text-slate-500 px-0.5">
+                    Markdown is ok in chat. <kbd className="kbd-hint">Enter</kbd> send ·{' '}
+                    <kbd className="kbd-hint">Shift+Enter</kbd> newline
+                    {busy && ' · run in progress — Stop if you need to change something'}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5 shrink-0">
                   <button
                     type="button"
                     onClick={() => void onSend()}
                     disabled={busy || !input.trim() || !model}
-                    className="rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-30 px-4 py-2 text-sm font-medium text-white"
+                    title="Send (Enter)"
+                    className="rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.98] disabled:opacity-30 disabled:hover:bg-violet-600 px-4 py-2 text-sm font-medium text-white motion-reduce:transform-none"
                   >
                     Send
                   </button>
@@ -793,7 +818,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={stopStream}
-                      className="text-xs text-slate-400 hover:text-white"
+                      className="text-xs text-slate-400 hover:text-white underline-offset-2 hover:underline"
                     >
                       Stop
                     </button>
@@ -877,9 +902,9 @@ export default function App() {
                         </li>
                       ))}
                     </ul>
-                    <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                      {research.brief}
-                    </p>
+                    <div className="mt-2 text-slate-300/95">
+                      <MessageMarkdown text={research.brief} size="panel" />
+                    </div>
                   </div>
                 ) : (
                   <p className="text-xs text-slate-500 leading-relaxed">
@@ -908,9 +933,9 @@ export default function App() {
                   )}
                 </div>
                 {planMd ? (
-                  <pre className="text-[11px] text-slate-300/90 font-mono leading-relaxed whitespace-pre-wrap break-words max-h-[min(40dvh,18rem)] lg:max-h-[56vh] overflow-y-auto">
-                    {planMd}
-                  </pre>
+                  <div className="max-h-[min(40dvh,18rem)] lg:max-h-[56vh] overflow-y-auto rounded-lg border border-slate-700/35 bg-slate-950/30 p-2">
+                    <MessageMarkdown text={planMd} size="panel" />
+                  </div>
                 ) : (
                   <p className="text-xs text-slate-500">
                     The structured plan appears here when the council finishes a pass.
