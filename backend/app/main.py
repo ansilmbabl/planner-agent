@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .council_config import load_council_config
 from .config import get_settings
-from .llm import ollama_list_models
+from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
 from .session import CouncilSession, SessionPhase, SessionStore
 
@@ -82,8 +82,16 @@ def _get_or_set_model(s: CouncilSession, body: PostMessageBody) -> str:
 
 
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    settings = get_settings()
+    h: dict[str, Any] = {
+        "status": "ok",
+        "service": "planner-council",
+        "llm_provider": settings.llm_provider,
+    }
+    if settings.llm_provider == "ollama":
+        h["ollama"] = await ollama_reachable(settings.ollama_base_url)
+    return h
 
 
 @app.get("/api/models")
@@ -91,9 +99,25 @@ async def list_models() -> dict[str, list[str] | str]:
     settings = get_settings()
     if settings.llm_provider == "ollama":
         names = await ollama_list_models(settings.ollama_base_url)
+        probe = await ollama_reachable(settings.ollama_base_url)
         if not names:
-            return {"models": [], "default": settings.ollama_model, "hint": "Start Ollama or set OLLAMA_BASE_URL / model manually."}
-        return {"models": names, "default": settings.ollama_model if settings.ollama_model in names else names[0], "provider": "ollama"}
+            err = (
+                probe.get("error")
+                or "No models listed. On the Ollama host: `ollama pull llama3.2` (or another model), then refresh."
+            )
+            return {
+                "models": [],
+                "default": settings.ollama_model,
+                "provider": "ollama",
+                "hint": err,
+                "ollama": probe,
+            }
+        return {
+            "models": names,
+            "default": settings.ollama_model if settings.ollama_model in names else names[0],
+            "provider": "ollama",
+            "ollama": {"reachable": True, "model_count": len(names), "base_url": probe.get("base_url")},
+        }
     if settings.llm_provider == "openai":
         return {"models": [settings.openai_model], "default": settings.openai_model, "provider": "openai"}
     return {"models": [settings.anthropic_model], "default": settings.anthropic_model, "provider": "anthropic"}

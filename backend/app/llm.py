@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from typing import Any, Literal, TypedDict
 
 import httpx
@@ -83,7 +83,22 @@ async def _ollama_chat(
         raise NotImplementedError
     async with httpx.AsyncClient(timeout=settings.request_timeout_s) as c:
         r = await c.post(url, json=body)
-        r.raise_for_status()
+        if not r.is_success:
+            detail = r.text[:800]
+            try:
+                j = r.json()
+                detail = str(j.get("error", j))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            if r.status_code == 404:
+                raise RuntimeError(
+                    f"Ollama returned 404 for POST {url}\n"
+                    f"Response: {detail}\n"
+                    f"On the Ollama host, run: ollama pull {model}\n"
+                    f"List models: ollama list. Ensure Ollama is new enough for /api/chat (upgrade Ollama if needed). "
+                    f"From Docker, set OLLAMA_BASE_URL to the machine running Ollama (e.g. http://host.docker.internal:11434)."
+                ) from None
+            r.raise_for_status()
         data = r.json()
         return str(data.get("message", {}).get("content", "")).strip()
 
@@ -177,6 +192,37 @@ async def ollama_list_models(base_url: str) -> list[str]:
         return []
 
 
+async def ollama_reachable(base_url: str) -> dict[str, Any]:
+    """GET /api/tags for diagnostics (same as list models but returns status + error)."""
+    url = f"{base_url.rstrip('/')}/api/tags"
+    out: dict[str, Any] = {
+        "reachable": False,
+        "base_url": base_url.rstrip("/"),
+        "model_count": 0,
+        "models": [],
+        "error": None,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            r = await c.get(url)
+            if r.status_code != 200:
+                out["error"] = f"HTTP {r.status_code} from {url}: {r.text[:300]}"
+                return out
+            try:
+                d = r.json()
+            except json.JSONDecodeError:
+                out["error"] = f"Invalid JSON from {url}"
+                return out
+            models = d.get("models") or []
+            names = [m.get("name", "") for m in models if m.get("name")]
+            out["reachable"] = True
+            out["model_count"] = len(names)
+            out["models"] = names
+    except (httpx.HTTPError, OSError) as e:
+        out["error"] = str(e)
+    return out
+
+
 async def complete_structured_json(
     settings: Settings,
     system: str,
@@ -207,6 +253,7 @@ __all__ = [
     "complete_chat",
     "complete_structured_json",
     "ollama_list_models",
+    "ollama_reachable",
     "_json_extract",
     "_msg_user",
     "_msg_system",

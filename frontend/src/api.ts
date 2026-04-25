@@ -1,10 +1,26 @@
 const API = '/api'
 
+export type OllamaProbe = {
+  reachable: boolean
+  base_url: string
+  model_count: number
+  models?: string[]
+  error: string | null
+}
+
+export type HealthResponse = {
+  status: string
+  service?: string
+  llm_provider?: string
+  ollama?: OllamaProbe
+}
+
 export type ModelsResponse = {
   models: string[]
   default?: string
   provider?: string
   hint?: string
+  ollama?: OllamaProbe | { reachable: boolean; model_count: number; base_url?: string }
 }
 
 export type SessionResponse = {
@@ -47,6 +63,12 @@ export type SseEvent =
   | { type: 'stream_end' }
   | Record<string, unknown>
 
+export async function getHealth(): Promise<HealthResponse> {
+  const r = await fetch(`${API}/health`)
+  if (!r.ok) throw new Error(`health: ${r.status}`)
+  return r.json()
+}
+
 export async function getModels(): Promise<ModelsResponse> {
   const r = await fetch(`${API}/models`)
   if (!r.ok) throw new Error(`models: ${r.status}`)
@@ -74,12 +96,14 @@ export async function getSession(
 export async function* streamUserMessage(
   sessionId: string,
   content: string,
-  model: string
+  model: string,
+  signal?: AbortSignal
 ): AsyncGenerator<SseEvent, void, unknown> {
   const r = await fetch(`${API}/sessions/${sessionId}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, model }),
+    signal,
   })
   if (!r.ok) {
     const t = await r.text()

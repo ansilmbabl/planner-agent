@@ -39,6 +39,17 @@ docker run --rm -p 8000:8000 -e OLLAMA_BASE_URL=http://host.docker.internal:1143
 
 Override `OLLAMA_MODEL`, `LLM_PROVIDER`, or API keys with `-e` / a `.env` file as in [.env.example](.env.example).
 
+### Docker + Ollama troubleshooting
+
+- **`404` on `.../api/chat` (from the app in Docker):**  
+  1) On the machine where Ollama runs, pull the model the UI uses: `ollama pull llama3.2` (or change **Model** in the UI / set `OLLAMA_MODEL` to a name from `ollama list`).  
+  2) Ensure the API can reach that host: `OLLAMA_BASE_URL` must point at a running Ollama (default in compose: `http://host.docker.internal:11434` for the host Ollama app).  
+  3) Upgrade Ollama if it is very old; `/api/chat` must exist on your Ollama version.
+
+- **UI shows Ollama connected but 0 models:** run `ollama pull …` on the Ollama host, then use **Refresh connection** in the app.
+
+- **`GET /api/health`** now includes an `ollama` block with reachability and model count for debugging.
+
 ## Run (development)
 
 **Terminal 1 — API** (from repo root you can set `PYTHONPATH=backend` or `cd` into `backend`):

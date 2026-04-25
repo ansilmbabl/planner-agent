@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   createSession,
+  getHealth,
   getModels,
+  type HealthResponse,
   type SseEvent,
   streamUserMessage,
 } from './api'
@@ -11,7 +13,6 @@ type FeedItem = {
   kind: 'phase' | 'research' | 'agent' | 'synth' | 'await' | 'err' | 'text'
   title: string
   body?: string
-  meta?: string
 }
 
 function simpleId() {
@@ -27,18 +28,16 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     const e = ev as { phase: string; message?: string; round?: number }
     return {
       kind: 'phase',
-      title: e.message ?? e.phase,
-      body: e.round != null ? `Round: ${e.round} · ${e.phase}` : e.phase,
+      title: e.message || e.phase || 'Phase',
+      body:
+        e.round != null
+          ? `Round ${e.round} · ${e.phase}`
+          : (e.phase ?? ''),
     }
   }
   if (t === 'research') {
-    const e = ev as { brief: string; sources: { href: string; title: string }[] }
-    return {
-      kind: 'research',
-      title: 'Research brief',
-      body: e.brief,
-      ...{},
-    } as { title: string; body: string; kind: FeedItem['kind'] }
+    const e = ev as { brief: string }
+    return { kind: 'research', title: 'Research brief', body: e.brief }
   }
   if (t === 'agent') {
     const e = ev as {
@@ -49,9 +48,9 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
       user_question?: string | null
     }
     let body = e.reaction
-    if (e.planner_note) body += `\n\n_Notes for plan:_\n${e.planner_note}`
-    if (e.user_question) body += `\n\n_Question to user:_ ${e.user_question}`
-    return { kind: 'agent', title: `R${e.round} · ${e.name}`, body }
+    if (e.planner_note) body += `\n\nNotes for plan:\n${e.planner_note}`
+    if (e.user_question) body += `\n\nQuestion: ${e.user_question}`
+    return { kind: 'agent', title: `Round ${e.round} · ${e.name}`, body }
   }
   if (t === 'awaiting_user') {
     const e = ev as { questions: string[] }
@@ -73,24 +72,28 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     return {
       kind: 'text',
       title: 'Plan document ready',
-      body: 'See the panel on the right — you can download plan.md.',
+      body: 'See the right panel to preview and download plan.md',
     }
   }
   if (t === 'stream_end') {
     return { kind: 'phase', title: '', body: '' }
   }
   if (t === 'done') {
-    return { kind: 'phase', title: 'Complete', body: 'You can start a new idea by sending another message after the plan (session resets on next send).' }
+    return {
+      kind: 'phase',
+      title: 'Complete',
+      body: 'You can send another message to start a new plan (session resets).',
+    }
   }
   return { kind: 'text', title: t, body: JSON.stringify(ev) }
 }
-
 
 export default function App() {
   const [models, setModels] = useState<string[]>([])
   const [defaultModel, setDefaultModel] = useState('llama3.2')
   const [model, setModel] = useState('llama3.2')
   const [modelHint, setModelHint] = useState<string | null>(null)
+  const [health, setHealth] = useState<HealthResponse | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -104,27 +107,46 @@ export default function App() {
     sources: { title: string; href: string }[]
   } | null>(null)
 
-  const refreshModels = useCallback(async () => {
+  const streamAbort = useRef<AbortController | null>(null)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    composerRef.current?.focus()
+  }, [])
+
+  const refreshConnection = useCallback(async () => {
+    setModelHint(null)
+    try {
+      const h = await getHealth()
+      setHealth(h)
+    } catch {
+      setHealth(null)
+    }
     try {
       const m = await getModels()
       if (m.models.length) {
         setModels(m.models)
-        setDefaultModel(m.default ?? m.models[0]!)
-        setModel(m.default ?? m.models[0]!)
+        const def = m.default ?? m.models[0]!
+        setDefaultModel(def)
+        setModel((prev) => (m.models!.includes(prev) ? prev : def))
       } else {
-        setModelHint(
-          (m as { hint?: string }).hint ??
-            'No models found — set Ollama and pull a model, or set LLM provider in .env'
-        )
+        let h =
+          m.hint ??
+          'No models in Ollama. On the host, run: ollama pull llama3.2, then click Refresh below.'
+        const om = m.ollama
+        if (om && typeof om === 'object' && 'error' in om && om.error) {
+          h = `${h} (${om.error as string})`
+        }
+        setModelHint(h)
       }
     } catch {
-      setModelHint('Could not list models. Is the API up?')
+      setModelHint('Could not load models. Is the API running?')
     }
   }, [])
 
   useEffect(() => {
-    void refreshModels()
-  }, [refreshModels])
+    void refreshConnection()
+  }, [refreshConnection])
 
   const ensureSession = useCallback(async () => {
     if (sessionId) return sessionId
@@ -142,7 +164,7 @@ export default function App() {
     }
     if ((ev as { type: string }).type === 'research') {
       const r = ev as { brief: string; sources: { title: string; href: string }[] }
-      setResearch({ brief: r.brief, sources: r.sources })
+      setResearch({ brief: r.brief, sources: r.sources || [] })
     }
     if ((ev as { type: string }).type === 'awaiting_user') {
       setAwaiting(true)
@@ -166,23 +188,26 @@ export default function App() {
     }
   }
 
-  const onSend = async () => {
+  const stopStream = useCallback(() => {
+    streamAbort.current?.abort()
+    streamAbort.current = null
+    setBusy(false)
+  }, [])
+
+  async function onSend() {
     const text = input.trim()
     if (!text || busy) return
     setBusy(true)
     setInput('')
+    const ac = new AbortController()
+    streamAbort.current = ac
     try {
       const sid = await ensureSession()
       setFeed((f) => [
         ...f,
-        {
-          id: simpleId(),
-          kind: 'text',
-          title: 'You',
-          body: text,
-        },
+        { id: simpleId(), kind: 'text', title: 'You', body: text },
       ])
-      for await (const ev of streamUserMessage(sid, text, model)) {
+      for await (const ev of streamUserMessage(sid, text, model, ac.signal)) {
         if ((ev as { type?: string }).type === 'error') {
           setFeed((f) => [
             ...f,
@@ -198,16 +223,24 @@ export default function App() {
         pushFeed(ev)
       }
     } catch (e) {
-      setFeed((f) => [
-        ...f,
-        {
-          id: simpleId(),
-          kind: 'err',
-          title: 'Request',
-          body: e instanceof Error ? e.message : String(e),
-        },
-      ])
+      if (e instanceof Error && e.name === 'AbortError') {
+        setFeed((f) => [
+          ...f,
+          { id: simpleId(), kind: 'err', title: 'Stopped', body: 'Request cancelled.' },
+        ])
+      } else {
+        setFeed((f) => [
+          ...f,
+          {
+            id: simpleId(),
+            kind: 'err',
+            title: 'Request',
+            body: e instanceof Error ? e.message : String(e),
+          },
+        ])
+      }
     } finally {
+      streamAbort.current = null
       setBusy(false)
     }
   }
@@ -223,31 +256,79 @@ export default function App() {
     URL.revokeObjectURL(a.href)
   }
 
+  const oll = health?.ollama
+  const ollamaOk = oll?.reachable && (oll.model_count ?? 0) > 0
+  const ollamaHostReachable = oll?.reachable === true && oll.model_count === 0
+
   return (
-    <div className="min-h-dvh flex flex-col max-w-6xl mx-auto px-4 py-6 gap-6">
-      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-700/60 pb-6">
+    <div className="min-h-dvh flex flex-col max-w-6xl mx-auto px-4 sm:px-6 py-6 gap-4">
+      {/* Connection strip */}
+      <div
+        className={`flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-3 text-sm ${
+          ollamaOk
+            ? 'border-emerald-500/30 bg-emerald-950/25 text-emerald-100/90'
+            : oll?.reachable === false
+              ? 'border-rose-500/40 bg-rose-950/30 text-rose-100/90'
+              : 'border-amber-500/30 bg-amber-950/20 text-amber-100/80'
+        }`}
+      >
+        <span className="font-medium">
+          {health?.llm_provider === 'ollama' ? 'Ollama' : 'LLM'}
+        </span>
+        {oll && (
+          <>
+            <span className="text-white/50">|</span>
+            <span>
+              {ollamaOk
+                ? `${oll.model_count} model(s) at ${oll.base_url}`
+                : oll.reachable
+                  ? `Connected but no models — run: ollama pull llama3.2 (on the Ollama host)`
+                  : oll.error || 'Unreachable'}
+            </span>
+          </>
+        )}
+        {!oll && <span>Checking…</span>}
+        <button
+          type="button"
+          onClick={() => void refreshConnection()}
+          className="ml-auto text-xs font-medium text-white/80 hover:text-white underline-offset-2 hover:underline"
+        >
+          Refresh connection
+        </button>
+      </div>
+
+      {ollamaHostReachable && (
+        <p className="text-amber-200/90 text-sm rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2">
+          Ollama is reachable but the model list is empty. Pull a model on the
+          same machine that runs Ollama: <code className="text-amber-100">ollama pull llama3.2</code> then
+          set <b>Model</b> to match, or set <code className="text-amber-100">OLLAMA_MODEL</code> in Docker.
+        </p>
+      )}
+
+      <header className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 border-b border-slate-700/60 pb-5">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
             Planner Council
           </h1>
-          <p className="text-slate-400 text-sm mt-1 max-w-xl">
-            Describe a product or problem. A council of agents discusses it,
-            optionally asks you for clarification, then produces a{' '}
-            <code className="text-violet-300">plan.md</code> for agentic
-            implementers.
+          <p className="text-slate-400 text-sm mt-1 max-w-2xl leading-relaxed">
+            Describe a product or problem. Agents debate, may ask for clarification,
+            then produce a structured <code className="text-violet-300">plan.md</code>.
+            <span className="text-slate-500"> Enter sends · Shift+Enter for a new line.</span>
           </p>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs text-slate-500">
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1.5 text-xs text-slate-500 font-medium">
             Model
             <select
-              className="bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-w-[12rem]"
+              className="bg-slate-900/90 border border-slate-600 rounded-xl px-3 py-2.5 text-sm text-slate-100 min-w-[14rem] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
               value={model}
               onChange={(e) => setModel(e.target.value)}
               disabled={busy}
             >
               {models.length === 0 && (
-                <option value={defaultModel}>{defaultModel} (type if custom)</option>
+                <option value={defaultModel}>
+                  {defaultModel} (choose after ollama pull)
+                </option>
               )}
               {models.map((m) => (
                 <option key={m} value={m}>
@@ -256,142 +337,157 @@ export default function App() {
               ))}
             </select>
           </label>
-          <button
-            type="button"
-            onClick={() => void refreshModels()}
-            className="text-xs text-violet-400 hover:underline h-8"
-          >
-            Refresh models
-          </button>
         </div>
       </header>
 
       {modelHint && (
-        <p className="text-amber-200/90 text-sm bg-amber-900/20 border border-amber-800/50 rounded-lg px-3 py-2">
+        <p className="text-amber-200/90 text-sm rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2">
           {modelHint}
         </p>
       )}
 
-      <div className="grid lg:grid-cols-2 gap-6 flex-1 min-h-0">
-        <div className="flex flex-col gap-3 min-h-[420px]">
+      <div className="grid lg:grid-cols-5 gap-5 flex-1 min-h-0 grow">
+        <div className="lg:col-span-3 flex flex-col gap-3 min-h-[360px]">
           <div className="flex items-center justify-between text-xs text-slate-500 uppercase tracking-wide">
-            <span>Chat</span>
+            <span>Conversation</span>
             {phase && (
-              <span className="text-violet-300 normal-case">Phase: {phase}</span>
+              <span className="text-violet-300/90 normal-case font-medium">
+                {phase}
+              </span>
             )}
           </div>
-          <div className="flex-1 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 overflow-y-auto max-h-[min(60vh,520px)] space-y-3 text-sm">
+          <div
+            role="log"
+            aria-live="polite"
+            className="flex-1 rounded-2xl border border-slate-700/50 bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto max-h-[min(58vh,480px)] space-y-3 text-sm shadow-inner"
+          >
             {feed.length === 0 && (
-              <p className="text-slate-500 text-sm">
-                What do you want to build or fix? Be specific about constraints
-                and success criteria.
+              <p className="text-slate-500 text-sm leading-relaxed">
+                What do you want to build? Mention constraints, stack, and what
+                &quot;done&quot; means.
               </p>
             )}
             {feed.map((f) => (
-              <div
+              <article
                 key={f.id}
-                className={`rounded-xl px-3 py-2 border ${
+                className={`rounded-xl px-3 py-2.5 border ${
                   f.kind === 'err'
-                    ? 'border-red-800/60 bg-red-950/20'
+                    ? 'border-rose-500/35 bg-rose-950/25'
                     : f.title === 'You'
-                      ? 'border-violet-500/20 bg-violet-950/20'
-                      : 'border-slate-700/50 bg-slate-800/30'
+                      ? 'border-violet-500/25 bg-violet-950/20'
+                      : 'border-slate-600/40 bg-slate-800/40'
                 }`}
               >
-                <div className="text-xs text-violet-300/80 font-medium">
+                <div className="text-xs text-violet-200/80 font-semibold">
                   {f.title}
                 </div>
                 {f.body && (
-                  <p className="text-slate-200 mt-1 whitespace-pre-wrap text-sm">
+                  <p className="text-slate-200/95 mt-1.5 whitespace-pre-wrap text-sm leading-relaxed">
                     {f.body}
                   </p>
                 )}
-              </div>
+              </article>
             ))}
             {busy && (
-              <div className="text-slate-500 text-sm animate-pulse">
-                Council in session…
-              </div>
+              <p className="text-slate-500 text-sm flex items-center gap-2">
+                <span className="inline-block size-2 rounded-full bg-violet-500 animate-pulse" />
+                Working…
+              </p>
             )}
           </div>
-          <div className="flex gap-2">
+
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
             <textarea
-              className="flex-1 min-h-[88px] rounded-xl border border-slate-600/80 bg-slate-950/50 px-3 py-2 text-slate-100 placeholder-slate-600 text-sm"
+              ref={composerRef}
+              id="message-input"
+              name="message"
+              autoComplete="off"
+              className="flex-1 min-h-[100px] rounded-xl border border-slate-600/90 bg-slate-950/60 px-3 py-2.5 text-slate-100 placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
               placeholder={
                 awaiting
-                  ? 'Answer the questions above, or say to proceed with assumptions…'
-                  : 'Describe the idea, stack preferences, and what “done” means…'
+                  ? 'Answer the questions above, or say to proceed with your best assumptions…'
+                  : 'Type your idea… (Enter to send, Shift+Enter for newline)'
               }
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
-                  void onSend()
+                  if (!busy) void onSend()
                 }
               }}
               disabled={busy}
             />
-            <button
-              type="button"
-              onClick={() => void onSend()}
-              disabled={busy}
-              className="self-end rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 px-5 py-2 text-sm font-medium text-white"
-            >
-              Send
-            </button>
+            <div className="flex sm:flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => void onSend()}
+                disabled={busy || !input.trim()}
+                className="rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:pointer-events-none px-6 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet-900/20"
+              >
+                Send
+              </button>
+              {busy && (
+                <button
+                  type="button"
+                  onClick={stopStream}
+                  className="rounded-xl border border-slate-500/60 bg-slate-800/80 px-4 py-2.5 text-sm text-slate-200 hover:bg-slate-700/80"
+                >
+                  Stop
+                </button>
+              )}
+            </div>
           </div>
-          <p className="text-xs text-slate-600">⌃⌘ Enter to send</p>
         </div>
 
-        <div className="flex flex-col gap-3 min-h-0">
+        <div className="lg:col-span-2 flex flex-col gap-3 min-h-0">
           <div className="text-xs text-slate-500 uppercase tracking-wide">
             Research & plan
           </div>
-          <div className="rounded-2xl border border-slate-700/60 bg-slate-900/30 p-4 flex flex-col gap-3 flex-1 min-h-0 max-h-[min(70vh,640px)]">
+          <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-4 flex flex-col gap-3 flex-1 min-h-0 max-h-[min(72vh,640px)] shadow-lg shadow-black/20">
             {research && (
               <div className="shrink-0">
-                <h3 className="text-sm font-medium text-slate-300">Sources</h3>
-                <ul className="mt-1 text-xs text-slate-500 space-y-1 max-h-20 overflow-y-auto">
-                  {research.sources.slice(0, 8).map((s) => (
+                <h3 className="text-sm font-medium text-slate-200">Sources</h3>
+                <ul className="mt-2 text-xs text-slate-500 space-y-1.5 max-h-24 overflow-y-auto">
+                  {research.sources.slice(0, 10).map((s) => (
                     <li key={s.href}>
                       <a
                         href={s.href}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-violet-400 hover:underline truncate block"
+                        className="text-violet-400 hover:text-violet-300 hover:underline line-clamp-2"
                       >
                         {s.title || s.href}
                       </a>
                     </li>
                   ))}
                 </ul>
-                <p className="text-sm text-slate-400 mt-2 line-clamp-3">
+                <p className="text-sm text-slate-400 mt-2 leading-relaxed line-clamp-4">
                   {research.brief}
                 </p>
               </div>
             )}
             <div className="flex-1 min-h-0 flex flex-col border-t border-slate-700/50 pt-3">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-sm font-medium text-slate-300">plan.md</h3>
+              <div className="flex justify-between items-center mb-2 gap-2">
+                <h3 className="text-sm font-medium text-slate-200">plan.md</h3>
                 {planMd && (
                   <button
                     type="button"
                     onClick={downloadPlan}
-                    className="text-xs rounded-lg border border-violet-500/40 px-2 py-1 text-violet-200 hover:bg-violet-950/50"
+                    className="text-xs rounded-lg border border-violet-500/35 px-2.5 py-1.5 text-violet-200 hover:bg-violet-950/50"
                   >
-                    Download {planName}
+                    Download
                   </button>
                 )}
               </div>
               {planMd ? (
-                <pre className="flex-1 overflow-y-auto pr-1 text-left text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap max-h-96">
+                <pre className="flex-1 overflow-y-auto pr-1 text-left text-xs text-slate-300/95 font-mono leading-relaxed whitespace-pre-wrap min-h-0 max-h-80">
                   {planMd}
                 </pre>
               ) : (
-                <p className="text-slate-500 text-sm">
-                  The full structured plan will appear here when the council
-                  finishes. Use Ollama for a free, local run.
+                <p className="text-slate-500 text-sm leading-relaxed">
+                  Your implementation plan (sections, tasks, and checklist) will
+                  show here. Fix Ollama connection (strip above) if nothing runs.
                 </p>
               )}
             </div>
