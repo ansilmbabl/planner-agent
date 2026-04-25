@@ -99,8 +99,9 @@ async def health() -> dict[str, Any]:
 async def list_models() -> dict[str, list[str] | str]:
     settings = get_settings()
     if settings.llm_provider == "ollama":
-        names = await ollama_list_models(settings.ollama_base_url)
+        # Single /api/tags fetch — avoids duplicate GETs that could disagree (e.g. first timing out, second OK).
         probe = await ollama_reachable(settings.ollama_base_url)
+        names = [n for n in (probe.get("models") or []) if isinstance(n, str) and n.strip()]
         if not names:
             err = (
                 probe.get("error")
@@ -113,13 +114,17 @@ async def list_models() -> dict[str, list[str] | str]:
                 "hint": err,
                 "ollama": probe,
             }
-        # First model from Ollama (same order as /api/tags) — not a hardcoded name
         default_name = names[0]
         return {
             "models": names,
             "default": default_name,
             "provider": "ollama",
-            "ollama": {"reachable": True, "model_count": len(names), "base_url": probe.get("base_url")},
+            "ollama": {
+                "reachable": True,
+                "model_count": len(names),
+                "base_url": probe.get("base_url"),
+                "models": names,
+            },
         }
     if settings.llm_provider == "openai":
         return {"models": [settings.openai_model], "default": settings.openai_model, "provider": "openai"}

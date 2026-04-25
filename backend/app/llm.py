@@ -179,19 +179,6 @@ async def _anthropic_chat(
         return ""
 
 
-async def ollama_list_models(base_url: str) -> list[str]:
-    url = f"{base_url.rstrip('/')}/api/tags"
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.get(url)
-            r.raise_for_status()
-            d = r.json()
-            models = d.get("models") or []
-            return [m.get("name", "") for m in models if m.get("name")]
-    except (httpx.HTTPError, OSError, ValueError):
-        return []
-
-
 async def ollama_reachable(base_url: str) -> dict[str, Any]:
     """GET /api/tags for diagnostics (same as list models but returns status + error)."""
     url = f"{base_url.rstrip('/')}/api/tags"
@@ -203,7 +190,7 @@ async def ollama_reachable(base_url: str) -> dict[str, Any]:
         "error": None,
     }
     try:
-        async with httpx.AsyncClient(timeout=6.0) as c:
+        async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.get(url)
             if r.status_code != 200:
                 out["error"] = f"HTTP {r.status_code} from {url}: {r.text[:300]}"
@@ -221,6 +208,12 @@ async def ollama_reachable(base_url: str) -> dict[str, Any]:
     except (httpx.HTTPError, OSError) as e:
         out["error"] = str(e)
     return out
+
+
+async def ollama_list_models(base_url: str) -> list[str]:
+    """Model names from Ollama /api/tags — same source as ollama_reachable (single code path)."""
+    probe = await ollama_reachable(base_url)
+    return [n for n in (probe.get("models") or []) if isinstance(n, str) and n.strip()]
 
 
 async def complete_structured_json(

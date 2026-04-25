@@ -115,29 +115,35 @@ export default function App() {
 
   const refreshConnection = useCallback(async () => {
     setModelHint(null)
+    let h: Awaited<ReturnType<typeof getHealth>> | null = null
     try {
-      const h = await getHealth()
+      h = await getHealth()
       setHealth(h)
     } catch {
       setHealth(null)
     }
     try {
       const m = await getModels()
-      if (m.models.length) {
-        setModels(m.models)
-        const def = m.default ?? m.models[0]!
-        setModel((prev) =>
-          prev && m.models!.includes(prev) ? prev : def
-        )
+      // Prefer /api/models; if empty but /api/health has names (e.g. transient mismatch), use health.ollama.models
+      let list = Array.isArray(m.models) ? m.models : []
+      const healthModels = h?.ollama?.models
+      if (!list.length && Array.isArray(healthModels) && healthModels.length) {
+        list = healthModels
+      }
+      if (list.length) {
+        setModels(list)
+        const def = m.default && list.includes(m.default) ? m.default : list[0]!
+        setModel((prev) => (prev && list.includes(prev) ? prev : def))
       } else {
-        let h =
+        let msg =
           m.hint ??
-          'No models in Ollama. On the host, run: ollama pull llama3.2, then click Refresh below.'
+          'No models in Ollama. On the host, run: ollama pull <name>, then click Refresh below.'
         const om = m.ollama
         if (om && typeof om === 'object' && 'error' in om && om.error) {
-          h = `${h} (${om.error as string})`
+          msg = `${msg} (${om.error as string})`
         }
-        setModelHint(h)
+        setModelHint(msg)
+        setModels([])
       }
     } catch {
       setModelHint('Could not load models. Is the API running?')
