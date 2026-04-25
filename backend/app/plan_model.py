@@ -5,6 +5,23 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def _str_list_to_objects(items: Any, key: str) -> list[Any]:
+    """LLMs often return ['a','b'] instead of [{key: 'a'}, {key: 'b'}]."""
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        return []
+    out: list[Any] = []
+    for el in items:
+        if isinstance(el, str):
+            s = el.strip()
+            if s:
+                out.append({key: s})
+        elif isinstance(el, dict):
+            out.append(el)
+    return out
+
+
 class NonGoal(BaseModel):
     item: str
 
@@ -79,12 +96,37 @@ class PlanSpec(BaseModel):
 
     @classmethod
     def from_llm_dict(cls, d: dict[str, Any]) -> PlanSpec:
+        d = _normalize_plan_spec_dict(d)
         return cls.model_validate(d)
+
+
+def _normalize_plan_spec_dict(d: Any) -> dict[str, Any]:
+    """Coerce common LLM mistakes (string arrays instead of object arrays) before Pydantic."""
+    if not isinstance(d, dict):
+        return {}
+    d = {k: v for k, v in d.items()}
+    d["non_goals"] = _str_list_to_objects(d.get("non_goals"), "item")
+    d["constraints"] = _str_list_to_objects(d.get("constraints"), "description")
+    d["open_questions"] = _str_list_to_objects(d.get("open_questions"), "question")
+    d["testing"] = _str_list_to_objects(d.get("testing"), "item")
+    # Checklist: sometimes list of task strings
+    ch = d.get("checklist")
+    if isinstance(ch, list):
+        ch_out: list[Any] = []
+        for el in ch:
+            if isinstance(el, str) and el.strip():
+                ch_out.append({"task": el.strip(), "done": False})
+            else:
+                ch_out.append(el)
+        d["checklist"] = ch_out
+    return d
 
 
 def plan_spec_json_schema_hint() -> str:
     return """
-Return a single JSON object with these keys (use arrays of objects or strings as shown):
+Return a single JSON object with these keys.
+For non_goals, constraints, and open_questions you may use either an array of objects (preferred) or a simple array of strings (each string is coerced).
+
 {
   "title": "string",
   "problem_and_success": "string (measurable where possible)",
