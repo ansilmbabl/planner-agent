@@ -20,7 +20,7 @@ import {
   streamUserMessage,
 } from './api'
 import { MessageMarkdown } from './components/MessageMarkdown'
-import { SettingsChat } from './components/SettingsChat'
+import { SettingsPanel } from './components/SettingsPanel'
 
 type FeedItem = {
   id: string
@@ -606,7 +606,7 @@ export default function App() {
           >
             Settings
             <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
-              Ollama, model, storage
+              Model
             </span>
           </button>
         </div>
@@ -693,7 +693,7 @@ export default function App() {
 
         {mainView === 'settings' ? (
           <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
-            <SettingsChat
+            <SettingsPanel
               health={health}
               modelHint={modelHint}
               ollamaHostReachable={ollamaHostReachable}
