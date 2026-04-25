@@ -74,6 +74,22 @@ async def complete_chat(
     raise ValueError(f"Unknown provider: {provider}")
 
 
+def _ollama_error_text(resp: httpx.Response) -> str:
+    raw = (resp.text or "")[:2000]
+    try:
+        j = resp.json()
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return raw or f"HTTP {resp.status_code} (no JSON body)"
+    if not isinstance(j, dict):
+        return str(j)
+    err = j.get("error")
+    if isinstance(err, str):
+        return err
+    if isinstance(err, dict) and "message" in err:
+        return str(err.get("message", err))
+    return str(j.get("error", j))
+
+
 async def _ollama_chat(
     settings: Settings,
     messages: list[ChatMsg],
@@ -93,12 +109,7 @@ async def _ollama_chat(
     async with httpx.AsyncClient(timeout=settings.request_timeout_s) as c:
         r = await c.post(url, json=body)
         if not r.is_success:
-            detail = r.text[:800]
-            try:
-                j = r.json()
-                detail = str(j.get("error", j))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+            detail = _ollama_error_text(r)
             if r.status_code == 404:
                 raise RuntimeError(
                     f"Ollama returned 404 for POST {url}\n"
@@ -107,7 +118,15 @@ async def _ollama_chat(
                     f"List models: ollama list. Ensure Ollama is new enough for /api/chat (upgrade Ollama if needed). "
                     f"From Docker, set OLLAMA_BASE_URL to the machine running Ollama (e.g. http://host.docker.internal:11434)."
                 ) from None
-            r.raise_for_status()
+            extra = (
+                " Many models (e.g. image/vision-only or diffusers like flux) do not support /api/chat. "
+                "Choose a text LLM: qwen3-coder, llama3, gemma, mistral, etc."
+            )
+            raise RuntimeError(
+                f"Ollama returned HTTP {r.status_code} for POST {url}\n"
+                f"Model: {model}\n"
+                f"Response: {detail}{extra if r.status_code == 400 else ''}"
+            ) from None
         data = r.json()
         return str(data.get("message", {}).get("content", "")).strip()
 

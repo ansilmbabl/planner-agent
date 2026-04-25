@@ -50,6 +50,8 @@ Override `OLLAMA_MODEL`, `LLM_PROVIDER`, or API keys with `-e` / a `.env` file a
 
 - **`GET /api/health`** now includes an `ollama` block with reachability and model count for debugging.
 
+- **HTTP 400 from `/api/chat`:** Ollama returns a JSON `error` describing the issue. Common case: the selected model is **not a text chat model** (e.g. image/diffusion tags like `flux`, `z-image`). Use a model meant for chat: `qwen3-coder`, `llama3`, `gemma3`, `mistral`, etc. (see `ollama list` and the model’s docs on ollama.com).
+
 ## Run (development)
 
 **Terminal 1 — API** (from repo root you can set `PYTHONPATH=backend` or `cd` into `backend`):
