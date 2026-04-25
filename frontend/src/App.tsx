@@ -606,7 +606,7 @@ export default function App() {
           >
             Settings
             <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
-              Model
+              Connection
             </span>
           </button>
         </div>
@@ -648,13 +648,37 @@ export default function App() {
                   : (oll?.error as string) || 'LLM status'
               }
             />
+            <label className="flex items-center gap-1.5 min-w-0 shrink max-w-[min(46vw,11rem)] sm:max-w-[14rem]">
+              <span className="text-[10px] text-slate-500 uppercase tracking-wide hidden sm:inline">
+                Model
+              </span>
+              <select
+                className="min-w-0 flex-1 text-[11px] leading-tight py-1 px-2 rounded-md border border-slate-600/70 bg-slate-900/90 text-slate-200 focus:outline-none focus:ring-1 focus:ring-violet-500/40 disabled:opacity-40"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={busy}
+                title="Model for new messages"
+                aria-label="Model"
+              >
+                {models.length === 0 && (
+                  <option value="" disabled>
+                    No models
+                  </option>
+                )}
+                {models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               type="button"
               onClick={() => {
                 setMainView('settings')
                 setSidebarOpen(false)
               }}
-              className="text-xs rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-slate-200 hover:bg-white/5"
+              className="text-xs rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-slate-200 hover:bg-white/5 shrink-0"
             >
               Settings
             </button>
@@ -697,9 +721,6 @@ export default function App() {
               health={health}
               modelHint={modelHint}
               ollamaHostReachable={ollamaHostReachable}
-              models={models}
-              model={model}
-              onModelChange={setModel}
               onRefresh={() => {
                 void refreshConnection()
                 void loadSessionList()

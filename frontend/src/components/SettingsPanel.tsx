@@ -4,9 +4,6 @@ type SettingsPanelProps = {
   health: HealthResponse | null
   modelHint: string | null
   ollamaHostReachable: boolean
-  models: string[]
-  model: string
-  onModelChange: (v: string) => void
   onRefresh: () => void
   busy: boolean
   onBack: () => void
@@ -17,9 +14,6 @@ export function SettingsPanel({
   health,
   modelHint,
   ollamaHostReachable,
-  models,
-  model,
-  onModelChange,
   onRefresh,
   busy,
   onBack,
@@ -53,11 +47,11 @@ export function SettingsPanel({
       <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-6 max-w-md w-full">
         <section className="rounded-2xl border border-white/10 bg-slate-900/30 p-4 sm:p-5">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-            Model
+            Connection
           </h3>
           <p className="text-sm text-slate-400 mt-1.5 leading-relaxed">
-            Default model for new chats. Pick a <span className="text-slate-300">text</span>{' '}
-            chat model (image-only models will not work with the council).
+            Refresh loads models for the <span className="text-slate-300">Model</span> menu on
+            the main screen. You can add more options here later.
           </p>
 
           <div className="mt-4 flex items-center gap-2 text-sm text-slate-200">
@@ -94,7 +88,7 @@ export function SettingsPanel({
             <p className="mt-3 text-xs text-amber-200/90 rounded-lg border border-amber-500/20 bg-amber-950/20 px-2.5 py-2">
               No models listed. On the Ollama host run{' '}
               <code className="text-amber-100">ollama pull &lt;name&gt;</code>, then
-              refresh.
+              refresh and pick a model in the main header.
             </p>
           )}
 
@@ -103,27 +97,6 @@ export function SettingsPanel({
               {modelHint}
             </p>
           )}
-
-          <label className="mt-4 block text-sm text-slate-300">
-            <span className="text-[11px] text-slate-500 uppercase">Default model</span>
-            <select
-              className="mt-1.5 w-full rounded-xl border border-slate-600/80 bg-slate-950/80 px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
-              value={model}
-              onChange={(e) => onModelChange(e.target.value)}
-              disabled={busy}
-            >
-              {models.length === 0 && (
-                <option value="" disabled>
-                  No models
-                </option>
-              )}
-              {models.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </label>
         </section>
       </div>
     </div>
