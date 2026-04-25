@@ -162,8 +162,16 @@ export default function App() {
   } | null>(null)
 
   const streamAbort = useRef<AbortController | null>(null)
+  /** Session id for the in-flight /api/.../message stream (if any). */
+  const streamOwnerSessionIdRef = useRef<string | null>(null)
+  /** Synced to sessionId so event handlers can compare without stale closures. */
+  const viewingSessionIdRef = useRef<string | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    viewingSessionIdRef.current = sessionId
+  }, [sessionId])
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -280,7 +288,8 @@ export default function App() {
 
   const openSession = useCallback(
     async (id: string) => {
-      stopStream()
+      // Do not stop the stream — a run in another session should finish on the server
+      // while the user views a different chat.
       try {
         const data = await getSession(id)
         setSessionId(id)
@@ -294,7 +303,7 @@ export default function App() {
         )
       }
     },
-    [hydrateFromApi, stopStream]
+    [hydrateFromApi]
   )
 
   const newChat = useCallback(async () => {
@@ -322,6 +331,9 @@ export default function App() {
     async (id: string, e: MouseEvent<HTMLButtonElement>) => {
       e.stopPropagation()
       if (!window.confirm('Delete this chat and its saved history?')) return
+      if (streamOwnerSessionIdRef.current === id) {
+        stopStream()
+      }
       try {
         await deleteSessionApi(id)
         if (sessionId === id) {
@@ -335,7 +347,7 @@ export default function App() {
         )
       }
     },
-    [sessionId, clearWorkspace, loadSessionList]
+    [sessionId, clearWorkspace, loadSessionList, stopStream]
   )
 
   const ensureSession = useCallback(async () => {
@@ -346,8 +358,13 @@ export default function App() {
     return s.id
   }, [sessionId, model, loadSessionList])
 
+  const applyStreamToUi = () =>
+    streamOwnerSessionIdRef.current != null &&
+    streamOwnerSessionIdRef.current === viewingSessionIdRef.current
+
   const pushFeed = (ev: SseEvent) => {
     if (!ev || typeof ev !== 'object' || !('type' in ev)) return
+    if (!applyStreamToUi()) return
     if ((ev as { type: string }).type === 'plan') {
       const p = ev as { content: string; filename: string }
       setPlanMd(p.content)
@@ -398,44 +415,52 @@ export default function App() {
     streamAbort.current = ac
     try {
       const sid = await ensureSession()
+      streamOwnerSessionIdRef.current = sid
       setFeed((f) => [
         ...f,
         { id: simpleId(), kind: 'text', title: 'You', body: text },
       ])
       for await (const ev of streamUserMessage(sid, text, model, ac.signal)) {
         if ((ev as { type?: string }).type === 'error') {
-          setFeed((f) => [
-            ...f,
-            {
-              id: simpleId(),
-              kind: 'err',
-              title: 'Error',
-              body: (ev as { message: string }).message,
-            },
-          ])
+          if (applyStreamToUi()) {
+            setFeed((f) => [
+              ...f,
+              {
+                id: simpleId(),
+                kind: 'err',
+                title: 'Error',
+                body: (ev as { message: string }).message,
+              },
+            ])
+          }
           break
         }
         pushFeed(ev)
       }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
-        setFeed((f) => [
-          ...f,
-          { id: simpleId(), kind: 'err', title: 'Stopped', body: 'Cancelled.' },
-        ])
+        if (applyStreamToUi()) {
+          setFeed((f) => [
+            ...f,
+            { id: simpleId(), kind: 'err', title: 'Stopped', body: 'Cancelled.' },
+          ])
+        }
       } else {
-        setFeed((f) => [
-          ...f,
-          {
-            id: simpleId(),
-            kind: 'err',
-            title: 'Error',
-            body: e instanceof Error ? e.message : String(e),
-          },
-        ])
+        if (applyStreamToUi()) {
+          setFeed((f) => [
+            ...f,
+            {
+              id: simpleId(),
+              kind: 'err',
+              title: 'Error',
+              body: e instanceof Error ? e.message : String(e),
+            },
+          ])
+        }
       }
     } finally {
       streamAbort.current = null
+      streamOwnerSessionIdRef.current = null
       setBusy(false)
       void loadSessionList()
     }
