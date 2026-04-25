@@ -9,8 +9,10 @@ backend/.venv/
 .env
 backend/.env
 
-# Local persisted sessions (json per chat)
+# Local data: SQLite DB and legacy per-chat JSON
 data/sessions/*.json
+data/planner.db
+data/*.db
 
 # Node
 frontend/node_modules/

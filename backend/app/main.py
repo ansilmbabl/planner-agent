@@ -17,11 +17,15 @@ from .config import get_settings
 from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
 from .session import CouncilSession, SessionPhase
-from .session_persistence import FileSessionStore
+from .db import make_engine
+from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
 
 log = logging.getLogger(__name__)
 
-store = FileSessionStore(get_settings().sessions_data_dir)
+_settings = get_settings()
+_engine = make_engine(_settings.sqlite_path)
+migrate_json_dir_to_db(_engine, _settings.sessions_data_dir)
+store = DatabaseSessionStore(_engine)
 
 
 @asynccontextmanager
@@ -93,6 +97,7 @@ async def health() -> dict[str, Any]:
     }
     if settings.llm_provider == "ollama":
         h["ollama"] = await ollama_reachable(settings.ollama_base_url)
+    h["persistence"] = "sqlite"
     return h
 
 
@@ -163,7 +168,7 @@ async def list_sessions() -> list[dict[str, Any]]:
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str) -> dict[str, bool]:
-    if not store.get(session_id) and not (get_settings().sessions_data_dir / f"{session_id}.json").is_file():
+    if not store.get(session_id):
         raise HTTPException(404, "Session not found")
     ok = store.delete(session_id)
     return {"deleted": ok}
@@ -244,7 +249,7 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
         finally:
             try:
                 store.save(sess)
-            except OSError as e:
+            except Exception as e:  # noqa: BLE001
                 log.warning("Could not persist session: %s", e)
         yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
 

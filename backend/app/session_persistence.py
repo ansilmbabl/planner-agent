@@ -178,3 +178,152 @@ class FileSessionStore:
                 continue
         out.sort(key=lambda x: -float(x.get("updated_ts", 0) or 0))
         return out
+
+
+def migrate_json_dir_to_db(engine: Any, data_dir: Path) -> int:
+    """One-time: import legacy *.json session files (skip if id already in DB)."""
+    from sqlalchemy.orm import sessionmaker
+
+    from .db import CouncilSessionRow, create_tables
+
+    create_tables(engine)
+    if not data_dir.is_dir():
+        return 0
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    n = 0
+    for p in sorted(data_dir.glob("*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as e:
+            log.warning("Skip legacy file %s: %s", p, e)
+            continue
+        sid = str(d.get("id", p.stem))
+        d["id"] = sid
+        with SessionLocal() as sess:
+            if sess.get(CouncilSessionRow, sid) is not None:
+                continue
+        try:
+            cs = session_from_dict(d)
+        except (TypeError, ValueError) as e:
+            log.warning("Invalid session in %s: %s", p, e)
+            continue
+        try:
+            payload = json.dumps(session_to_dict(cs), ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            log.warning("Could not serialize session %s: %s", sid, e)
+            continue
+        t = float(cs.updated_ts)
+        with SessionLocal() as sess:
+            try:
+                sess.add(CouncilSessionRow(id=sid, payload=payload, updated_ts=t))
+                sess.commit()
+            except Exception:  # noqa: BLE001
+                sess.rollback()
+        n += 1
+    if n:
+        log.info("Imported %d legacy JSON session file(s) from %s", n, data_dir)
+    return n
+
+
+class DatabaseSessionStore:
+    """Persist sessions in SQLite (single table, JSON payload per row)."""
+
+    def __init__(self, engine: Any) -> None:
+        from sqlalchemy.orm import sessionmaker
+
+        from .db import CouncilSessionRow, create_tables
+
+        self._SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+        create_tables(engine)
+        self._engine = engine
+        self._SessionRow = CouncilSessionRow
+        self._cache: dict[str, CouncilSession] = {}
+
+    def create(self, model: str) -> CouncilSession:
+        sid = new_session_id()
+        t = time.time()
+        s = CouncilSession(id=sid, model=model, created_ts=t, updated_ts=t)
+        self._cache[sid] = s
+        self.save(s)
+        return s
+
+    def get(self, session_id: str) -> CouncilSession | None:
+        if session_id in self._cache:
+            return self._cache[session_id]
+        with self._SessionLocal() as sess:
+            row = sess.get(self._SessionRow, session_id)
+        if row is None:
+            return None
+        try:
+            d = json.loads(row.payload)
+            s = session_from_dict(d)
+            if s.id != session_id:
+                s.id = session_id
+            self._cache[session_id] = s
+            return s
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            log.warning("Failed to load session %s: %s", session_id, e)
+            return None
+
+    def save(self, s: CouncilSession) -> None:
+        s.updated_ts = time.time()
+        self._cache[s.id] = s
+        payload = json.dumps(session_to_dict(s), ensure_ascii=False)
+        with self._SessionLocal() as sess:
+            row = sess.get(self._SessionRow, s.id)
+            if row is None:
+                sess.add(
+                    self._SessionRow(
+                        id=s.id, payload=payload, updated_ts=float(s.updated_ts)
+                    )
+                )
+            else:
+                row.payload = payload
+                row.updated_ts = float(s.updated_ts)
+            try:
+                sess.commit()
+            except Exception as e:  # noqa: BLE001
+                log.error("Failed to save session %s: %s", s.id, e)
+                raise
+
+    def delete(self, session_id: str) -> bool:
+        self._cache.pop(session_id, None)
+        with self._SessionLocal() as sess:
+            row = sess.get(self._SessionRow, session_id)
+            if row is None:
+                return False
+            sess.delete(row)
+            sess.commit()
+        return True
+
+    def list_metadata(self) -> list[dict[str, Any]]:
+        from sqlalchemy import select
+
+        out: list[dict[str, Any]] = []
+        with self._SessionLocal() as sess:
+            q = select(self._SessionRow).order_by(
+                self._SessionRow.updated_ts.desc()
+            )
+            rows = sess.execute(q).scalars().all()
+        for row in rows:
+            try:
+                d = json.loads(row.payload)
+            except (json.JSONDecodeError, TypeError) as e:
+                log.warning("Bad payload for session %s: %s", row.id, e)
+                continue
+            title = d.get("title") or ""
+            if not str(title).strip():
+                ub = d.get("user_brief") or ""
+                title = (str(ub).split("\n")[0].strip() or "Untitled")[:60]
+            out.append(
+                {
+                    "id": d.get("id", row.id),
+                    "title": str(title)[:80],
+                    "model": d.get("model", ""),
+                    "phase": d.get("phase", "idle"),
+                    "created_ts": float(d.get("created_ts", 0) or 0),
+                    "updated_ts": float(d.get("updated_ts", d.get("created_ts", 0)) or 0),
+                    "has_plan": bool((d.get("plan_markdown") or "").strip()),
+                }
+            )
+        return out
