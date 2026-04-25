@@ -9,7 +9,35 @@ A local web app: you describe a product idea in chat, a **council of AI agents**
 
 - Python 3.10+ (3.11 recommended)
 - [Ollama](https://ollama.com/) for local models (e.g. `ollama pull llama3.2`)
-- Node 20+ for the frontend
+- Node 20+ for the frontend (only if you develop without Docker)
+
+## Run with Docker
+
+Single image: builds the Vite app and serves it with FastAPI on port **8000**.
+
+**Ollama on your machine** (typical): start Ollama on the host (`ollama serve`), pull a model (`ollama pull llama3.2`), then:
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:8000](http://localhost:8000). The container uses `OLLAMA_BASE_URL=http://host.docker.internal:11434` to reach the host (works on Docker Desktop; Linux uses `host-gateway` in [docker-compose.yml](docker-compose.yml)).
+
+**Ollama inside Docker** (optional profile, large image — first time pull a model into the volume):
+
+```bash
+OLLAMA_BASE_URL=http://ollama:11434 docker compose --profile ollama up --build
+docker compose exec ollama ollama pull llama3.2
+```
+
+**Image only** (no compose):
+
+```bash
+docker build -t planner-council .
+docker run --rm -p 8000:8000 -e OLLAMA_BASE_URL=http://host.docker.internal:11434 --add-host=host.docker.internal:host-gateway planner-council
+```
+
+Override `OLLAMA_MODEL`, `LLM_PROVIDER`, or API keys with `-e` / a `.env` file as in [.env.example](.env.example).
 
 ## Run (development)
 

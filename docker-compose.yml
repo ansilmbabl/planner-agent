@@ -1,0 +1,50 @@
+# Planner Council — web UI + API in one image.
+# Ollama: run on the host (default) or use the profile below for a container.
+#
+#   docker compose up --build
+#   open http://localhost:8000
+#
+# Ollama on host: ensure `ollama serve` is running, then:
+#   docker compose up --build
+# (the app uses host.docker.internal:11434)
+#
+# Ollama in Docker (heavier; first run: docker compose exec ollama ollama pull llama3.2):
+#   docker compose --profile ollama up --build
+#   and set in compose or .env: OLLAMA_BASE_URL=http://ollama:11434
+
+services:
+  planner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Host machine Ollama (macOS/Windows; Linux: extra_hosts below)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Optional: copy .env.example to .env and use: env_file: .env
+    # When using the ollama service below, run with OLLAMA_BASE_URL=http://ollama:11434
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    profiles:
+      - ollama
+    # GPU optional: deploy with nvidia for faster inference
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  ollama_data: {}
