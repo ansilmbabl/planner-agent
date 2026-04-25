@@ -1,0 +1,138 @@
+# {{ spec.title }}
+
+## Problem and success criteria
+
+{{ spec.problem_and_success }}
+
+## Non-goals
+
+{% for n in spec.non_goals -%}
+- {{ n.item }}
+{% else -%}
+- _None specified._
+{% endfor %}
+
+## Constraints
+
+{% for c in spec.constraints -%}
+- {{ c.description }}
+{% else -%}
+- _None specified._
+{% endfor %}
+
+## Proposed approach
+
+{{ spec.proposed_approach }}
+
+## Tech stack
+
+| Component | Choice | Rationale |
+|----------|--------|-----------|
+{% for t in spec.tech_stack -%}
+| {{ t.component }} | {{ t.choice }} | {{ t.rationale }} |
+{% else -%}
+| _TBD_ | _TBD_ | _TBD_ |
+{% endfor %}
+
+## Data model and interfaces
+
+{% for d in spec.data_model_and_interfaces -%}
+### {{ d.name }}
+
+{{ d.details }}
+
+{% else -%}
+_TBD — define schemas, key APIs, and event names._
+{% endfor %}
+
+## Phases
+
+{% for p in spec.phases -%}
+### {{ p.name }}
+
+**Deliverables**
+
+{% for d in p.deliverables -%}
+- {{ d }}
+{% else -%}
+- _TBD_
+{% endfor %}
+
+**Risks**
+
+{% for r in p.risks -%}
+- {{ r }}
+{% else -%}
+- _None listed._
+{% endfor %}
+
+**Out of scope (for this phase)**
+
+{% for o in p.out_of_scope -%}
+- {{ o }}
+{% else -%}
+- _None listed._
+{% endfor %}
+
+{% else -%}
+_TBD — ordered phases with deliverables, risks, and out-of-scope._
+{% endfor %}
+
+## File and module map
+
+```
+{% for f in spec.file_map -%}
+{{ f.path }} — {{ f.responsibility }}
+{% else -%}
+# (add tree and per-path responsibilities)
+{% endfor -%}
+```
+
+## Key algorithms / flows
+
+{% for k in spec.key_flows -%}
+- {{ k.description }}
+{% if k.mermaid %}
+
+```mermaid
+{{ k.mermaid | trim }}
+```
+
+{% endif %}
+{% else -%}
+- _TBD — bullets or mermaid for critical flows._
+{% endfor %}
+
+## Testing and quality
+
+{% for t in spec.testing -%}
+- {{ t.item }}
+{% else -%}
+- _TBD — unit, integration, and what to mock._
+{% endfor %}
+
+## Operations
+
+| Name | Value |
+|------|--------|
+{% for o in spec.operations -%}
+| {{ o.name }} | {{ o.value }} |
+{% else -%}
+| _TBD_ | _TBD_ |
+{% endfor %}
+
+## Open questions
+
+{% for q in spec.open_questions -%}
+- {{ q.question }}
+{% else -%}
+- _None — all blockers were resolved or accepted with assumptions._
+{% endfor %}
+
+## Implementation checklist
+
+{% for c in spec.checklist -%}
+- [ ] {{ c.task }}
+{% else -%}
+- [ ] _Add concrete tasks for an agentic implementer._
+{% endfor %}
