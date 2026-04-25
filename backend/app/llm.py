@@ -7,7 +7,7 @@ from typing import Any, Literal, TypedDict
 
 import httpx
 
-from .config import Settings, get_settings
+from .config import Settings
 
 
 class ChatMsg(TypedDict, total=False):
