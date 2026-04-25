@@ -303,6 +303,8 @@ async def run_council_pipeline(
         else:
             # --- New problem: set brief, research, round 1 ---
             s.user_brief = user_message.strip()
+            if not (s.title or "").strip():
+                s.title = (s.user_brief.split("\n")[0].strip() or "New plan")[:80]
             s.messages.append(ChatMessage(role="user", content=s.user_brief))
             s.agent_turns = []
             s.user_answered_clarification = False

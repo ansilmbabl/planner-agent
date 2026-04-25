@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     plan_json_retries: int = 2
 
     frontend_dist: Path | None = None
+    # Persisted session JSON files (enables list / resume across restarts)
+    sessions_data_dir: Path = Path(__file__).resolve().parents[2] / "data" / "sessions"
 
 
 def get_settings() -> Settings:

@@ -23,20 +23,39 @@ export type ModelsResponse = {
   ollama?: OllamaProbe | { reachable: boolean; model_count: number; base_url?: string }
 }
 
-export type SessionResponse = {
+export type SessionMessage = {
+  role: string
+  content: string
+  agent_id?: string | null
+  agent_name?: string | null
+  meta?: Record<string, unknown>
+}
+
+export type SessionListItem = {
   id: string
+  title: string
   model: string
   phase: string
+  created_ts: number
+  updated_ts: number
+  has_plan: boolean
+}
+
+export type SessionResponse = {
+  id: string
+  title?: string
+  model: string
+  phase: string
+  created_ts?: number
+  updated_ts?: number
+  user_brief?: string
+  research_brief?: string
+  research_sources?: { title: string; href: string; body?: string }[]
   pending_user_questions?: string[]
   plan_markdown?: string
   plan_filename?: string
-  messages?: Array<{
-    role: string
-    content: string
-    agent_id?: string | null
-    agent_name?: string | null
-    meta?: Record<string, unknown>
-  }>
+  error_message?: string | null
+  messages?: SessionMessage[]
 }
 
 export type SseEvent =
@@ -85,12 +104,23 @@ export async function createSession(model: string): Promise<SessionResponse> {
   return r.json()
 }
 
+export async function listSessions(): Promise<SessionListItem[]> {
+  const r = await fetch(`${API}/sessions`)
+  if (!r.ok) throw new Error(`sessions: ${r.status}`)
+  return r.json()
+}
+
 export async function getSession(
   sessionId: string
 ): Promise<SessionResponse> {
   const r = await fetch(`${API}/sessions/${sessionId}`)
   if (!r.ok) throw new Error(`session: ${r.status}`)
   return r.json()
+}
+
+export async function deleteSessionApi(sessionId: string): Promise<void> {
+  const r = await fetch(`${API}/sessions/${sessionId}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(`delete: ${r.status}`)
 }
 
 export async function* streamUserMessage(

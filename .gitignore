@@ -9,6 +9,9 @@ backend/.venv/
 .env
 backend/.env
 
+# Local persisted sessions (json per chat)
+data/sessions/*.json
+
 # Node
 frontend/node_modules/
 frontend/dist/

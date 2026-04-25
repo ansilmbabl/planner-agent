@@ -1,9 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react'
 import {
   createSession,
+  deleteSessionApi,
   getHealth,
   getModels,
+  getSession,
+  listSessions,
   type HealthResponse,
+  type SessionListItem,
+  type SessionMessage,
   type SseEvent,
   streamUserMessage,
 } from './api'
@@ -37,7 +48,7 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
   }
   if (t === 'research') {
     const e = ev as { brief: string }
-    return { kind: 'research', title: 'Research brief', body: e.brief }
+    return { kind: 'research', title: 'Research', body: e.brief }
   }
   if (t === 'agent') {
     const e = ev as {
@@ -56,7 +67,7 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     const e = ev as { questions: string[] }
     return {
       kind: 'await',
-      title: 'Your input needed',
+      title: 'Your input',
       body: e.questions.map((q) => `• ${q}`).join('\n'),
     }
   }
@@ -71,8 +82,8 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
   if (t === 'plan') {
     return {
       kind: 'text',
-      title: 'Plan document ready',
-      body: 'See the right panel to preview and download plan.md',
+      title: 'Plan ready',
+      body: 'See the document panel (right) to preview and download.',
     }
   }
   if (t === 'stream_end') {
@@ -82,10 +93,46 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     return {
       kind: 'phase',
       title: 'Complete',
-      body: 'You can send another message to start a new plan (session resets).',
+      body: 'You can add another message, or start a new chat in the sidebar.',
     }
   }
   return { kind: 'text', title: t, body: JSON.stringify(ev) }
+}
+
+function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
+  if (!msgs?.length) return []
+  return msgs.map((m, i) => ({
+    id: `hist-${i}-${(m.content || '').slice(0, 6)}`,
+    kind: 'text' as const,
+    title:
+      m.role === 'user'
+        ? 'You'
+        : (m.agent_name as string) ||
+          (m.agent_id as string) ||
+          (m.role === 'assistant' ? 'Assistant' : m.role),
+    body: m.content,
+  }))
+}
+
+function formatSessionTime(ts: number) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function phasePill(phase: string) {
+  const p = (phase || 'idle').toLowerCase()
+  if (p === 'done' || p === 'idle') {
+    return 'text-slate-500 border-slate-600/50'
+  }
+  if (p === 'error') return 'text-rose-300 border-rose-500/30'
+  if (p === 'awaiting_user') return 'text-amber-200 border-amber-500/30'
+  return 'text-violet-200 border-violet-500/30'
 }
 
 export default function App() {
@@ -94,6 +141,8 @@ export default function App() {
   const [modelHint, setModelHint] = useState<string | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionList, setSessionList] = useState<SessionListItem[]>([])
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [feed, setFeed] = useState<FeedItem[]>([])
@@ -108,10 +157,14 @@ export default function App() {
 
   const streamAbort = useRef<AbortController | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  useEffect(() => {
-    composerRef.current?.focus()
-  }, [])
+  const scrollToBottom = () => {
+    requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    })
+  }
 
   const refreshConnection = useCallback(async () => {
     setModelHint(null)
@@ -124,7 +177,6 @@ export default function App() {
     }
     try {
       const m = await getModels()
-      // Prefer /api/models; if empty but /api/health has names (e.g. transient mismatch), use health.ollama.models
       let list = Array.isArray(m.models) ? m.models : []
       const healthModels = h?.ollama?.models
       if (!list.length && Array.isArray(healthModels) && healthModels.length) {
@@ -150,16 +202,121 @@ export default function App() {
     }
   }, [])
 
+  const loadSessionList = useCallback(async () => {
+    try {
+      const list = await listSessions()
+      setSessionList(list)
+    } catch {
+      setSessionList([])
+    }
+  }, [])
+
   useEffect(() => {
     void refreshConnection()
-  }, [refreshConnection])
+    void loadSessionList()
+  }, [refreshConnection, loadSessionList])
+
+  useEffect(() => {
+    scrollToBottom()
+  }, [feed, busy])
+
+  const clearWorkspace = useCallback(() => {
+    setFeed([])
+    setPlanMd('')
+    setPlanName('plan.md')
+    setResearch(null)
+    setPhase('')
+    setAwaiting(false)
+  }, [])
+
+  const stopStream = useCallback(() => {
+    streamAbort.current?.abort()
+    streamAbort.current = null
+    setBusy(false)
+  }, [])
+
+  const hydrateFromApi = useCallback((data: Awaited<ReturnType<typeof getSession>>) => {
+    if (data.model) setModel(data.model)
+    setPhase(data.phase || '')
+    setAwaiting((data.phase || '') === 'awaiting_user')
+    setPlanMd(data.plan_markdown || '')
+    setPlanName(data.plan_filename || 'plan.md')
+    if (data.research_brief) {
+      setResearch({
+        brief: data.research_brief,
+        sources: (data.research_sources || []) as { title: string; href: string }[],
+      })
+    } else {
+      setResearch(null)
+    }
+    setFeed(sessionMessagesToFeed(data.messages || []))
+  }, [])
+
+  const openSession = useCallback(
+    async (id: string) => {
+      stopStream()
+      try {
+        const data = await getSession(id)
+        setSessionId(id)
+        hydrateFromApi(data)
+        setSidebarOpen(false)
+        composerRef.current?.focus()
+      } catch (e) {
+        setModelHint(
+          e instanceof Error ? e.message : 'Failed to open session'
+        )
+      }
+    },
+    [hydrateFromApi, stopStream]
+  )
+
+  const newChat = useCallback(async () => {
+    if (!model.trim()) {
+      setModelHint('Pick a model first.')
+      return
+    }
+    stopStream()
+    try {
+      const s = await createSession(model)
+      setSessionId(s.id)
+      clearWorkspace()
+      await loadSessionList()
+      setSidebarOpen(false)
+      composerRef.current?.focus()
+    } catch (e) {
+      setModelHint(
+        e instanceof Error ? e.message : 'Could not start a new session'
+      )
+    }
+  }, [model, clearWorkspace, loadSessionList, stopStream])
+
+  const removeSession = useCallback(
+    async (id: string, e: MouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation()
+      if (!window.confirm('Delete this chat and its saved history?')) return
+      try {
+        await deleteSessionApi(id)
+        if (sessionId === id) {
+          setSessionId(null)
+          clearWorkspace()
+        }
+        await loadSessionList()
+      } catch (err) {
+        setModelHint(
+          err instanceof Error ? err.message : 'Delete failed'
+        )
+      }
+    },
+    [sessionId, clearWorkspace, loadSessionList]
+  )
 
   const ensureSession = useCallback(async () => {
     if (sessionId) return sessionId
     const s = await createSession(model)
     setSessionId(s.id)
+    await loadSessionList()
     return s.id
-  }, [sessionId, model])
+  }, [sessionId, model, loadSessionList])
 
   const pushFeed = (ev: SseEvent) => {
     if (!ev || typeof ev !== 'object' || !('type' in ev)) return
@@ -194,17 +351,11 @@ export default function App() {
     }
   }
 
-  const stopStream = useCallback(() => {
-    streamAbort.current?.abort()
-    streamAbort.current = null
-    setBusy(false)
-  }, [])
-
   async function onSend() {
     const text = input.trim()
     if (!text || busy) return
     if (!model.trim()) {
-      setModelHint('Select a model from the list (or refresh after pulling a model in Ollama).')
+      setModelHint('Select a model from the list.')
       return
     }
     setBusy(true)
@@ -236,7 +387,7 @@ export default function App() {
       if (e instanceof Error && e.name === 'AbortError') {
         setFeed((f) => [
           ...f,
-          { id: simpleId(), kind: 'err', title: 'Stopped', body: 'Request cancelled.' },
+          { id: simpleId(), kind: 'err', title: 'Stopped', body: 'Cancelled.' },
         ])
       } else {
         setFeed((f) => [
@@ -244,7 +395,7 @@ export default function App() {
           {
             id: simpleId(),
             kind: 'err',
-            title: 'Request',
+            title: 'Error',
             body: e instanceof Error ? e.message : String(e),
           },
         ])
@@ -252,6 +403,7 @@ export default function App() {
     } finally {
       streamAbort.current = null
       setBusy(false)
+      void loadSessionList()
     }
   }
 
@@ -271,235 +423,339 @@ export default function App() {
   const ollamaHostReachable = oll?.reachable === true && oll.model_count === 0
 
   return (
-    <div className="min-h-dvh flex flex-col max-w-6xl mx-auto px-4 sm:px-6 py-6 gap-4">
-      {/* Connection strip */}
-      <div
-        className={`flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-3 text-sm ${
-          ollamaOk
-            ? 'border-emerald-500/30 bg-emerald-950/25 text-emerald-100/90'
-            : oll?.reachable === false
-              ? 'border-rose-500/40 bg-rose-950/30 text-rose-100/90'
-              : 'border-amber-500/30 bg-amber-950/20 text-amber-100/80'
-        }`}
+    <div className="h-dvh flex flex-col sm:flex-row bg-[#0b0c0f] text-slate-100 overflow-hidden">
+      {/* Sidebar — sessions */}
+      <aside
+        className={`
+        shrink-0 border-r border-white/5 bg-[#0e1016] flex flex-col
+        sm:w-80 sm:static sm:max-h-none
+        ${sidebarOpen ? 'w-full max-h-[40vh] sm:max-h-none' : 'hidden sm:flex sm:w-80'}
+      `}
       >
-        <span className="font-medium">
-          {health?.llm_provider === 'ollama' ? 'Ollama' : 'LLM'}
-        </span>
-        {oll && (
-          <>
-            <span className="text-white/50">|</span>
-            <span>
-              {ollamaOk
-                ? `${oll.model_count} model(s) at ${oll.base_url}`
-                : oll.reachable
-                  ? `Connected but no models — run: ollama pull llama3.2 (on the Ollama host)`
-                  : oll.error || 'Unreachable'}
-            </span>
-          </>
-        )}
-        {!oll && <span>Checking…</span>}
-        <button
-          type="button"
-          onClick={() => void refreshConnection()}
-          className="ml-auto text-xs font-medium text-white/80 hover:text-white underline-offset-2 hover:underline"
-        >
-          Refresh connection
-        </button>
-      </div>
-
-      {ollamaHostReachable && (
-        <p className="text-amber-200/90 text-sm rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2">
-          Ollama is reachable but the model list is empty. Pull a model on the
-          same machine that runs Ollama: <code className="text-amber-100">ollama pull llama3.2</code> then
-          set <b>Model</b> to match, or set <code className="text-amber-100">OLLAMA_MODEL</code> in Docker.
-        </p>
-      )}
-
-      <header className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 border-b border-slate-700/60 pb-5">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-            Planner Council
-          </h1>
-          <p className="text-slate-400 text-sm mt-1 max-w-2xl leading-relaxed">
-            Describe a product or problem. Agents debate, may ask for clarification,
-            then produce a structured <code className="text-violet-300">plan.md</code>.
-            <span className="text-slate-500"> Enter sends · Shift+Enter for a new line.</span>
-          </p>
-        </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1.5 text-xs text-slate-500 font-medium">
-            Model
-            <select
-              className="bg-slate-900/90 border border-slate-600 rounded-xl px-3 py-2.5 text-sm text-slate-100 min-w-[14rem] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              disabled={busy}
-            >
-              {models.length === 0 && (
-                <option value="" disabled>
-                  No models — pull one in Ollama, then Refresh
-                </option>
-              )}
-              {models.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </header>
-
-      {modelHint && (
-        <p className="text-amber-200/90 text-sm rounded-xl border border-amber-500/30 bg-amber-950/20 px-3 py-2">
-          {modelHint}
-        </p>
-      )}
-
-      <div className="grid lg:grid-cols-5 gap-5 flex-1 min-h-0 grow">
-        <div className="lg:col-span-3 flex flex-col gap-3 min-h-[360px]">
-          <div className="flex items-center justify-between text-xs text-slate-500 uppercase tracking-wide">
-            <span>Conversation</span>
-            {phase && (
-              <span className="text-violet-300/90 normal-case font-medium">
-                {phase}
-              </span>
-            )}
+        <div className="p-3 border-b border-white/5 flex items-center gap-2">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-sm font-semibold text-white tracking-tight">
+              Planner Council
+            </h1>
+            <p className="text-[11px] text-slate-500 leading-snug">
+              Multi-agent plans → <span className="text-violet-300">plan.md</span>
+            </p>
           </div>
-          <div
-            role="log"
-            aria-live="polite"
-            className="flex-1 rounded-2xl border border-slate-700/50 bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto max-h-[min(58vh,480px)] space-y-3 text-sm shadow-inner"
+        </div>
+        <div className="p-2">
+          <button
+            type="button"
+            onClick={() => void newChat()}
+            className="w-full rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium py-2.5 px-3 shadow-lg shadow-violet-900/20 transition"
           >
-            {feed.length === 0 && (
-              <p className="text-slate-500 text-sm leading-relaxed">
-                What do you want to build? Mention constraints, stack, and what
-                &quot;done&quot; means.
-              </p>
-            )}
-            {feed.map((f) => (
-              <article
-                key={f.id}
-                className={`rounded-xl px-3 py-2.5 border ${
-                  f.kind === 'err'
-                    ? 'border-rose-500/35 bg-rose-950/25'
-                    : f.title === 'You'
-                      ? 'border-violet-500/25 bg-violet-950/20'
-                      : 'border-slate-600/40 bg-slate-800/40'
-                }`}
+            + New chat
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3 space-y-0.5">
+          {sessionList.length === 0 && (
+            <p className="text-xs text-slate-500 px-2 py-3">
+              No saved chats yet. New chats are stored on the server so you can
+              continue later.
+            </p>
+          )}
+          {sessionList.map((s) => {
+            const active = s.id === sessionId
+            return (
+              <div
+                key={s.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => void openSession(s.id)}
+                onKeyDown={(e) => e.key === 'Enter' && void openSession(s.id)}
+                className={`
+                  group w-full text-left rounded-xl px-2.5 py-2 pr-1 flex gap-1 items-start
+                  transition
+                  ${
+                    active
+                      ? 'bg-violet-500/15 border border-violet-500/25'
+                      : 'hover:bg-white/5 border border-transparent'
+                  }
+                `}
               >
-                <div className="text-xs text-violet-200/80 font-semibold">
-                  {f.title}
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-100 line-clamp-2 font-medium">
+                    {s.title || 'Untitled'}
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-1 text-[10px] text-slate-500">
+                    <span
+                      className={`rounded px-1 py-0.5 border ${phasePill(s.phase)}`}
+                    >
+                      {s.phase}
+                    </span>
+                    {s.has_plan && (
+                      <span className="text-emerald-400/90">has plan</span>
+                    )}
+                    <span className="ml-auto">
+                      {formatSessionTime(s.updated_ts)}
+                    </span>
+                  </div>
                 </div>
-                {f.body && (
-                  <p className="text-slate-200/95 mt-1.5 whitespace-pre-wrap text-sm leading-relaxed">
-                    {f.body}
-                  </p>
-                )}
-              </article>
-            ))}
-            {busy && (
-              <p className="text-slate-500 text-sm flex items-center gap-2">
-                <span className="inline-block size-2 rounded-full bg-violet-500 animate-pulse" />
-                Working…
-              </p>
-            )}
-          </div>
-
-          <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
-            <textarea
-              ref={composerRef}
-              id="message-input"
-              name="message"
-              autoComplete="off"
-              className="flex-1 min-h-[100px] rounded-xl border border-slate-600/90 bg-slate-950/60 px-3 py-2.5 text-slate-100 placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
-              placeholder={
-                awaiting
-                  ? 'Answer the questions above, or say to proceed with your best assumptions…'
-                  : 'Type your idea… (Enter to send, Shift+Enter for newline)'
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  if (!busy) void onSend()
-                }
-              }}
-              disabled={busy}
-            />
-            <div className="flex sm:flex-col gap-2">
-              <button
-                type="button"
-                onClick={() => void onSend()}
-                disabled={busy || !input.trim()}
-                className="rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:pointer-events-none px-6 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet-900/20"
-              >
-                Send
-              </button>
-              {busy && (
                 <button
                   type="button"
-                  onClick={stopStream}
-                  className="rounded-xl border border-slate-500/60 bg-slate-800/80 px-4 py-2.5 text-sm text-slate-200 hover:bg-slate-700/80"
+                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-500/10"
+                  title="Delete"
+                  onClick={(e) => void removeSession(s.id, e)}
                 >
-                  Stop
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    aria-hidden
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M6 7h12M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m-9 0v10a1 1 0 001 1h6a1 1 0 001-1V7M10 11v5M14 11v5"
+                    />
+                  </svg>
                 </button>
+              </div>
+            )
+          })}
+        </div>
+      </aside>
+
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        {/* Top bar */}
+        <header className="shrink-0 border-b border-white/5 bg-[#0b0c0f]/90 backdrop-blur-sm px-3 py-2 sm:px-4 flex flex-wrap items-center gap-2 z-10">
+          <button
+            type="button"
+            className="sm:hidden rounded-lg border border-slate-600/60 px-2 py-1.5 text-xs text-slate-300"
+            onClick={() => setSidebarOpen((o) => !o)}
+            aria-label="Toggle sidebar"
+          >
+            Chats
+          </button>
+          <div
+            className={`hidden sm:block h-2 w-2 rounded-full shrink-0 ${
+              ollamaOk ? 'bg-emerald-500' : oll?.reachable === false ? 'bg-rose-500' : 'bg-amber-500'
+            }`}
+          />
+          <span className="text-xs text-slate-400 hidden sm:inline">
+            {ollamaOk
+              ? `${oll?.model_count} models · ${oll?.base_url}`
+              : oll?.error || 'Ollama status…'}
+          </span>
+          <div className="ml-auto flex items-center gap-2 flex-wrap">
+            <label className="text-[10px] uppercase text-slate-500 font-medium">
+              Model
+              <select
+                className="ml-1.5 block mt-0.5 rounded-lg border border-slate-600/80 bg-slate-900/90 px-2 py-1.5 text-xs text-slate-100 min-w-[10rem] max-w-[14rem] focus:ring-1 focus:ring-violet-500/50"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={busy}
+              >
+                {models.length === 0 && (
+                  <option value="" disabled>
+                    No models
+                  </option>
+                )}
+                {models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                void refreshConnection()
+                void loadSessionList()
+              }}
+              className="text-xs text-violet-400 hover:underline"
+            >
+              Refresh
+            </button>
+          </div>
+        </header>
+
+        {ollamaHostReachable && (
+          <div className="shrink-0 mx-3 mt-2 text-amber-200/80 text-xs rounded-lg border border-amber-500/20 bg-amber-950/20 px-2 py-1.5">
+            No models in Ollama — run <code className="text-amber-100">ollama pull &lt;name&gt;</code>
+          </div>
+        )}
+
+        {modelHint && (
+          <div className="shrink-0 mx-3 mt-2 text-amber-200/90 text-xs rounded-lg border border-amber-500/25 bg-amber-950/20 px-2 py-1.5">
+            {modelHint}
+            <button
+              type="button"
+              className="ml-2 text-amber-100 underline"
+              onClick={() => setModelHint(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+          {/* Messages */}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 border-b lg:border-b-0 lg:border-r border-white/5">
+            <div className="shrink-0 flex items-center justify-between px-3 py-1.5 text-[10px] text-slate-500 uppercase tracking-wide border-b border-white/5">
+              <span>Chat</span>
+              {sessionId && (
+                <span className="text-slate-600 font-mono text-[9px] truncate max-w-[10rem]">
+                  {sessionId}
+                </span>
+              )}
+              {phase && (
+                <span className="text-violet-300/80 normal-case">{phase}</span>
               )}
             </div>
-          </div>
-        </div>
-
-        <div className="lg:col-span-2 flex flex-col gap-3 min-h-0">
-          <div className="text-xs text-slate-500 uppercase tracking-wide">
-            Research & plan
-          </div>
-          <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-4 flex flex-col gap-3 flex-1 min-h-0 max-h-[min(72vh,640px)] shadow-lg shadow-black/20">
-            {research && (
-              <div className="shrink-0">
-                <h3 className="text-sm font-medium text-slate-200">Sources</h3>
-                <ul className="mt-2 text-xs text-slate-500 space-y-1.5 max-h-24 overflow-y-auto">
-                  {research.sources.slice(0, 10).map((s) => (
-                    <li key={s.href}>
-                      <a
-                        href={s.href}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-violet-400 hover:text-violet-300 hover:underline line-clamp-2"
-                      >
-                        {s.title || s.href}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-                <p className="text-sm text-slate-400 mt-2 leading-relaxed line-clamp-4">
-                  {research.brief}
-                </p>
-              </div>
-            )}
-            <div className="flex-1 min-h-0 flex flex-col border-t border-slate-700/50 pt-3">
-              <div className="flex justify-between items-center mb-2 gap-2">
-                <h3 className="text-sm font-medium text-slate-200">plan.md</h3>
-                {planMd && (
-                  <button
-                    type="button"
-                    onClick={downloadPlan}
-                    className="text-xs rounded-lg border border-violet-500/35 px-2.5 py-1.5 text-violet-200 hover:bg-violet-950/50"
-                  >
-                    Download
-                  </button>
-                )}
-              </div>
-              {planMd ? (
-                <pre className="flex-1 overflow-y-auto pr-1 text-left text-xs text-slate-300/95 font-mono leading-relaxed whitespace-pre-wrap min-h-0 max-h-80">
-                  {planMd}
-                </pre>
-              ) : (
-                <p className="text-slate-500 text-sm leading-relaxed">
-                  Your implementation plan (sections, tasks, and checklist) will
-                  show here. Fix Ollama connection (strip above) if nothing runs.
+            <div
+              ref={scrollRef}
+              className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 py-3 space-y-3"
+            >
+              {feed.length === 0 && !sessionId && (
+                <div className="rounded-2xl border border-dashed border-slate-700/50 bg-slate-900/20 p-6 text-center">
+                  <p className="text-slate-300 text-sm font-medium">Start a plan</p>
+                  <p className="text-slate-500 text-xs mt-1 max-w-sm mx-auto">
+                    Click <b>New chat</b>, pick a <b>text</b> model, describe what you
+                    want built. Chats are saved on this machine under{' '}
+                    <code className="text-slate-400">data/sessions/</code>.
+                  </p>
+                </div>
+              )}
+              {feed.length === 0 && sessionId && (
+                <p className="text-slate-500 text-sm">
+                  Type your first message, or add to this saved chat.
                 </p>
               )}
+              {feed.map((f) => (
+                <article
+                  key={f.id}
+                  className={`max-w-2xl rounded-2xl px-3.5 py-2.5 ${
+                    f.title === 'You'
+                      ? 'ml-auto bg-violet-500/10 border border-violet-500/20'
+                      : f.kind === 'err'
+                        ? 'bg-rose-500/5 border border-rose-500/25'
+                        : 'bg-slate-800/40 border border-slate-700/40'
+                  }`}
+                >
+                  <div
+                    className={`text-[10px] font-semibold tracking-wide uppercase ${
+                      f.title === 'You' ? 'text-violet-300' : 'text-slate-400'
+                    }`}
+                  >
+                    {f.title}
+                  </div>
+                  {f.body && (
+                    <p className="text-slate-200/95 mt-1.5 text-sm leading-relaxed whitespace-pre-wrap">
+                      {f.body}
+                    </p>
+                  )}
+                </article>
+              ))}
+              {busy && (
+                <p className="text-slate-500 text-xs flex items-center gap-2">
+                  <span className="inline-block size-1.5 rounded-full bg-violet-500 animate-pulse" />
+                  Running…
+                </p>
+              )}
+            </div>
+
+            <div className="shrink-0 p-3 border-t border-white/5 bg-[#0a0a0c]/80">
+              <div className="max-w-3xl mx-auto flex gap-2">
+                <textarea
+                  ref={composerRef}
+                  className="flex-1 min-h-[44px] max-h-32 rounded-xl border border-slate-600/70 bg-slate-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-violet-500/40 disabled:opacity-50"
+                  placeholder={
+                    awaiting
+                      ? 'Reply to the council…'
+                      : 'Describe the idea… Enter to send, Shift+Enter new line'
+                  }
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      if (!busy) void onSend()
+                    }
+                  }}
+                  disabled={busy}
+                />
+                <div className="flex flex-col gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void onSend()}
+                    disabled={busy || !input.trim() || !model}
+                    className="rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-30 px-4 py-2 text-sm font-medium text-white"
+                  >
+                    Send
+                  </button>
+                  {busy && (
+                    <button
+                      type="button"
+                      onClick={stopStream}
+                      className="text-xs text-slate-400 hover:text-white"
+                    >
+                      Stop
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Plan + research panel */}
+          <div className="w-full lg:w-[min(100%,24rem)] shrink-0 flex flex-col min-h-0 max-h-48 lg:max-h-none border-t lg:border-t-0 lg:border-l border-white/5 bg-[#0a0b0e]">
+            <div className="shrink-0 px-3 py-1.5 text-[10px] text-slate-500 uppercase border-b border-white/5">
+              Research & plan
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
+              {research && (
+                <div>
+                  <h3 className="text-xs font-medium text-slate-300">Sources</h3>
+                  <ul className="mt-1.5 text-[11px] text-slate-500 space-y-1 max-h-20 overflow-y-auto">
+                    {research.sources?.slice(0, 8).map((s) => (
+                      <li key={s.href}>
+                        <a
+                          href={s.href}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-violet-400/90 hover:underline line-clamp-1"
+                        >
+                          {s.title || s.href}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-slate-400 mt-2 leading-relaxed line-clamp-3">
+                    {research.brief}
+                  </p>
+                </div>
+              )}
+              <div className="border-t border-white/5 pt-3">
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className="text-xs font-medium text-slate-200">plan.md</h3>
+                  {planMd && (
+                    <button
+                      type="button"
+                      onClick={downloadPlan}
+                      className="text-[10px] rounded-md border border-violet-500/30 px-2 py-1 text-violet-200"
+                    >
+                      Download
+                    </button>
+                  )}
+                </div>
+                {planMd ? (
+                  <pre className="text-[11px] text-slate-300/90 font-mono leading-relaxed whitespace-pre-wrap break-words max-h-64 lg:max-h-[56vh] overflow-y-auto">
+                    {planMd}
+                  </pre>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    The structured plan will appear when the run completes.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>

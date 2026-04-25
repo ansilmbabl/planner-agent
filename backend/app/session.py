@@ -31,7 +31,9 @@ class ChatMessage:
 class CouncilSession:
     id: str
     model: str
+    title: str = ""
     created_ts: float = field(default_factory=time.time)
+    updated_ts: float = field(default_factory=time.time)
     phase: SessionPhase = SessionPhase.idle
     messages: list[ChatMessage] = field(default_factory=list)
     user_brief: str = ""

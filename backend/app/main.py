@@ -16,11 +16,12 @@ from .council_config import load_council_config
 from .config import get_settings
 from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
-from .session import CouncilSession, SessionPhase, SessionStore
+from .session import CouncilSession, SessionPhase
+from .session_persistence import FileSessionStore
 
 log = logging.getLogger(__name__)
 
-store = SessionStore()
+store = FileSessionStore(get_settings().sessions_data_dir)
 
 
 @asynccontextmanager
@@ -148,10 +149,24 @@ async def create_session(body: CreateSessionBody = Body(...)) -> JSONResponse:
     return JSONResponse(
         {
             "id": sess.id,
+            "title": getattr(sess, "title", "") or "",
             "model": sess.model,
             "phase": sess.phase.value,
         }
     )
+
+
+@app.get("/api/sessions", response_model=None)
+async def list_sessions() -> list[dict[str, Any]]:
+    return store.list_metadata()
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> dict[str, bool]:
+    if not store.get(session_id) and not (get_settings().sessions_data_dir / f"{session_id}.json").is_file():
+        raise HTTPException(404, "Session not found")
+    ok = store.delete(session_id)
+    return {"deleted": ok}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -161,8 +176,14 @@ async def get_session(session_id: str) -> dict[str, Any]:
         raise HTTPException(404, "Session not found")
     return {
         "id": sess.id,
+        "title": getattr(sess, "title", "") or "",
         "model": sess.model,
         "phase": sess.phase.value,
+        "created_ts": getattr(sess, "created_ts", 0),
+        "updated_ts": getattr(sess, "updated_ts", 0),
+        "user_brief": sess.user_brief,
+        "research_brief": sess.research_brief,
+        "research_sources": sess.research_sources,
         "pending_user_questions": sess.pending_user_questions,
         "plan_markdown": sess.plan_markdown,
         "plan_filename": sess.plan_filename,
@@ -220,6 +241,11 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            try:
+                store.save(sess)
+            except OSError as e:
+                log.warning("Could not persist session: %s", e)
         yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8")
