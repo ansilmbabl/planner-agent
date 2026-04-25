@@ -66,14 +66,15 @@ def _require_council():
     return load_council_config(p)
 
 
-def _get_or_set_model(s: CouncilSession, body: PostMessageBody) -> str:
+async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> str:
     settings = get_settings()
     m = (body.model or s.model or "").strip()
     if m:
         s.model = m
         return m
     if settings.llm_provider == "ollama":
-        s.model = settings.ollama_model
+        names = await ollama_list_models(settings.ollama_base_url)
+        s.model = names[0] if names else settings.ollama_model
     elif settings.llm_provider == "openai":
         s.model = settings.openai_model
     else:
@@ -103,7 +104,7 @@ async def list_models() -> dict[str, list[str] | str]:
         if not names:
             err = (
                 probe.get("error")
-                or "No models listed. On the Ollama host: `ollama pull llama3.2` (or another model), then refresh."
+                or "No models listed. On the Ollama host, run: ollama pull <name>, then refresh."
             )
             return {
                 "models": [],
@@ -112,9 +113,11 @@ async def list_models() -> dict[str, list[str] | str]:
                 "hint": err,
                 "ollama": probe,
             }
+        # First model from Ollama (same order as /api/tags) — not a hardcoded name
+        default_name = names[0]
         return {
             "models": names,
-            "default": settings.ollama_model if settings.ollama_model in names else names[0],
+            "default": default_name,
             "provider": "ollama",
             "ollama": {"reachable": True, "model_count": len(names), "base_url": probe.get("base_url")},
         }
@@ -130,7 +133,8 @@ async def create_session(body: CreateSessionBody = Body(...)) -> JSONResponse:
     m = (body.model or "").strip() if body.model else ""
     if not m:
         if st.llm_provider == "ollama":
-            m = st.ollama_model
+            names = await ollama_list_models(st.ollama_base_url)
+            m = names[0] if names else st.ollama_model
         elif st.llm_provider == "openai":
             m = st.openai_model
         else:
@@ -201,7 +205,7 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
     if sess.phase not in (SessionPhase.idle, SessionPhase.awaiting_user):
         raise HTTPException(409, f"Session busy or invalid state: {sess.phase.value}")
 
-    model = _get_or_set_model(sess, body)
+    model = await _resolve_session_model(sess, body)
     if not model:
         raise HTTPException(400, "Model name required for this session")
 

@@ -90,8 +90,7 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
 
 export default function App() {
   const [models, setModels] = useState<string[]>([])
-  const [defaultModel, setDefaultModel] = useState('llama3.2')
-  const [model, setModel] = useState('llama3.2')
+  const [model, setModel] = useState('')
   const [modelHint, setModelHint] = useState<string | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -127,8 +126,9 @@ export default function App() {
       if (m.models.length) {
         setModels(m.models)
         const def = m.default ?? m.models[0]!
-        setDefaultModel(def)
-        setModel((prev) => (m.models!.includes(prev) ? prev : def))
+        setModel((prev) =>
+          prev && m.models!.includes(prev) ? prev : def
+        )
       } else {
         let h =
           m.hint ??
@@ -197,6 +197,10 @@ export default function App() {
   async function onSend() {
     const text = input.trim()
     if (!text || busy) return
+    if (!model.trim()) {
+      setModelHint('Select a model from the list (or refresh after pulling a model in Ollama).')
+      return
+    }
     setBusy(true)
     setInput('')
     const ac = new AbortController()
@@ -326,8 +330,8 @@ export default function App() {
               disabled={busy}
             >
               {models.length === 0 && (
-                <option value={defaultModel}>
-                  {defaultModel} (choose after ollama pull)
+                <option value="" disabled>
+                  No models — pull one in Ollama, then Refresh
                 </option>
               )}
               {models.map((m) => (
