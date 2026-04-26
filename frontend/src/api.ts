@@ -37,6 +37,8 @@ export type SessionListItem = {
   id: string
   title: string
   model: string
+  /** config/councils/{council_id}.json used for this chat */
+  council_id?: string
   phase: string
   created_ts: number
   updated_ts: number
@@ -47,6 +49,7 @@ export type SessionResponse = {
   id: string
   title?: string
   model: string
+  council_id?: string
   phase: string
   created_ts?: number
   updated_ts?: number
@@ -97,16 +100,58 @@ export type CouncilConfig = {
   synthesizer: AgentDef | null
 }
 
-export async function getCouncil(): Promise<CouncilConfig> {
-  const r = await fetch(`${API}/council`)
+export async function listCouncils(): Promise<string[]> {
+  const r = await fetch(`${API}/councils`)
+  if (!r.ok) throw new Error(`councils: ${r.status}`)
+  const j = (await r.json()) as { councils?: string[] }
+  return j.councils ?? []
+}
+
+export async function createCouncil(
+  newId: string,
+  fromId: string = 'default'
+): Promise<{ status: string; id: string; path: string }> {
+  const r = await fetch(`${API}/councils`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: newId.trim(), from_id: fromId }),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `create council: ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function deleteCouncil(
+  councilId: string
+): Promise<{ status: string; id: string }> {
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}`,
+    { method: 'DELETE' }
+  )
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `delete council: ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function getCouncil(councilId: string = 'default'): Promise<CouncilConfig> {
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}`
+  )
   if (!r.ok) throw new Error(`council: ${r.status}`)
   return r.json()
 }
 
 export async function putCouncil(
-  config: CouncilConfig
-): Promise<{ status: string; path?: string }> {
-  const r = await fetch(`${API}/council`, {
+  config: CouncilConfig,
+  councilId: string = 'default'
+): Promise<{ status: string; path?: string; id?: string }> {
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}`,
+    {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -130,11 +175,14 @@ export async function getModels(): Promise<ModelsResponse> {
   return r.json()
 }
 
-export async function createSession(model: string): Promise<SessionResponse> {
+export async function createSession(
+  model: string,
+  councilId: string = 'default'
+): Promise<SessionResponse> {
   const r = await fetch(`${API}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, council_id: councilId }),
   })
   if (!r.ok) throw new Error((await r.text()) || 'create session')
   return r.json()

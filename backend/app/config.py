@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-3-5-sonnet-20241022"
 
     council_config_path: Path = Path(__file__).resolve().parents[2] / "config" / "council.json"
+    """Legacy single file; new installs use councils_dir. Still used as fallback for 'default'."""
+
+    councils_dir: Path = Path(__file__).resolve().parents[2] / "config" / "councils"
     research_max_queries: int = 3
     discussion_rounds: int = 2
     max_url_fetch_bytes: int = 200_000

@@ -31,6 +31,8 @@ class ChatMessage:
 class CouncilSession:
     id: str
     model: str
+    """Which agent council JSON to use (config/councils/{id}.json)."""
+    council_id: str = "default"
     title: str = ""
     created_ts: float = field(default_factory=time.time)
     updated_ts: float = field(default_factory=time.time)
@@ -58,9 +60,9 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, CouncilSession] = {}
 
-    def create(self, model: str) -> CouncilSession:
+    def create(self, model: str, council_id: str = "default") -> CouncilSession:
         sid = new_session_id()
-        s = CouncilSession(id=sid, model=model)
+        s = CouncilSession(id=sid, model=model, council_id=council_id or "default")
         self._sessions[sid] = s
         return s
 

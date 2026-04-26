@@ -45,6 +45,7 @@ def session_to_dict(s: CouncilSession) -> dict[str, Any]:
         "id": s.id,
         "title": s.title,
         "model": s.model,
+        "council_id": getattr(s, "council_id", None) or "default",
         "created_ts": s.created_ts,
         "updated_ts": s.updated_ts,
         "phase": pval,
@@ -77,6 +78,7 @@ def session_from_dict(d: dict[str, Any]) -> CouncilSession:
     return CouncilSession(
         id=str(d.get("id", "")),
         model=str(d.get("model", "")),
+        council_id=str(d.get("council_id") or "default").strip() or "default",
         title=str(d.get("title") or ""),
         created_ts=float(d.get("created_ts", 0) or time.time()),
         updated_ts=float(d.get("updated_ts", d.get("created_ts", 0)) or time.time()),
@@ -108,10 +110,16 @@ class FileSessionStore:
     def _path(self, session_id: str) -> Path:
         return self.data_dir / f"{session_id}.json"
 
-    def create(self, model: str) -> CouncilSession:
+    def create(self, model: str, council_id: str = "default") -> CouncilSession:
         sid = new_session_id()
         t = time.time()
-        s = CouncilSession(id=sid, model=model, created_ts=t, updated_ts=t)
+        s = CouncilSession(
+            id=sid,
+            model=model,
+            council_id=council_id or "default",
+            created_ts=t,
+            updated_ts=t,
+        )
         self._cache[sid] = s
         self.save(s)
         return s
@@ -239,10 +247,16 @@ class DatabaseSessionStore:
         self._SessionRow = CouncilSessionRow
         self._cache: dict[str, CouncilSession] = {}
 
-    def create(self, model: str) -> CouncilSession:
+    def create(self, model: str, council_id: str = "default") -> CouncilSession:
         sid = new_session_id()
         t = time.time()
-        s = CouncilSession(id=sid, model=model, created_ts=t, updated_ts=t)
+        s = CouncilSession(
+            id=sid,
+            model=model,
+            council_id=council_id or "default",
+            created_ts=t,
+            updated_ts=t,
+        )
         self._cache[sid] = s
         self.save(s)
         return s
@@ -320,6 +334,7 @@ class DatabaseSessionStore:
                     "id": d.get("id", row.id),
                     "title": str(title)[:80],
                     "model": d.get("model", ""),
+                    "council_id": str(d.get("council_id") or "default"),
                     "phase": d.get("phase", "idle"),
                     "created_ts": float(d.get("created_ts", 0) or 0),
                     "updated_ts": float(d.get("updated_ts", d.get("created_ts", 0)) or 0),

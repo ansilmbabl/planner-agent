@@ -12,6 +12,7 @@ import {
   getHealth,
   getModels,
   getSession,
+  listCouncils,
   listSessions,
   type HealthResponse,
   type SessionListItem,
@@ -191,6 +192,9 @@ export default function App() {
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [rightPanelTab, setRightPanelTab] = useState<'research' | 'plan'>('plan')
+  const [councils, setCouncils] = useState<string[]>(['default'])
+  const [councilForNew, setCouncilForNew] = useState('default')
+  const [sessionCouncilId, setSessionCouncilId] = useState<string | null>(null)
   const [mainView, setMainView] = useState<'council' | 'settings'>('council')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -257,6 +261,15 @@ export default function App() {
     } catch {
       setModelHint('Could not load models. Is the API running?')
     }
+    try {
+      const cl = await listCouncils()
+      if (cl.length) {
+        setCouncils(cl)
+        setCouncilForNew((cur) => (cur && cl.includes(cur) ? cur : cl[0]!))
+      }
+    } catch {
+      setCouncils(['default'])
+    }
   }, [])
 
   const loadSessionList = useCallback(async () => {
@@ -274,6 +287,18 @@ export default function App() {
     void refreshConnection()
     void loadSessionList()
   }, [refreshConnection, loadSessionList])
+
+  useEffect(() => {
+    if (mainView !== 'council') return
+    void listCouncils()
+      .then((cl) => {
+        if (cl.length) {
+          setCouncils(cl)
+          setCouncilForNew((cur) => (cur && cl.includes(cur) ? cur : cl[0]!))
+        }
+      })
+      .catch(() => {})
+  }, [mainView])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -312,6 +337,7 @@ export default function App() {
 
   const hydrateFromApi = useCallback((data: Awaited<ReturnType<typeof getSession>>) => {
     if (data.model) setModel(data.model)
+    setSessionCouncilId(data.council_id || 'default')
     setPhase(data.phase || '')
     setAwaiting((data.phase || '') === 'awaiting_user')
     setPlanMd(data.plan_markdown || '')
@@ -356,8 +382,9 @@ export default function App() {
     }
     stopStream()
     try {
-      const s = await createSession(model)
+      const s = await createSession(model, councilForNew)
       setSessionId(s.id)
+      setSessionCouncilId(s.council_id || councilForNew)
       clearWorkspace()
       await loadSessionList()
       setMainView('council')
@@ -368,7 +395,7 @@ export default function App() {
         e instanceof Error ? e.message : 'Could not start a new session'
       )
     }
-  }, [model, clearWorkspace, loadSessionList, stopStream])
+  }, [model, councilForNew, clearWorkspace, loadSessionList, stopStream])
 
   const removeSession = useCallback(
     async (id: string, e: MouseEvent<HTMLButtonElement>) => {
@@ -381,6 +408,7 @@ export default function App() {
         await deleteSessionApi(id)
         if (sessionId === id) {
           setSessionId(null)
+          setSessionCouncilId(null)
           clearWorkspace()
         }
         await loadSessionList()
@@ -395,11 +423,12 @@ export default function App() {
 
   const ensureSession = useCallback(async () => {
     if (sessionId) return sessionId
-    const s = await createSession(model)
+    const s = await createSession(model, councilForNew)
     setSessionId(s.id)
+    setSessionCouncilId(s.council_id || councilForNew)
     await loadSessionList()
     return s.id
-  }, [sessionId, model, loadSessionList])
+  }, [sessionId, model, councilForNew, loadSessionList])
 
   const applyStreamToUi = () =>
     streamOwnerSessionIdRef.current != null &&
@@ -656,6 +685,12 @@ export default function App() {
                     {s.has_plan && (
                       <span className="text-emerald-400/90">plan</span>
                     )}
+                    <span
+                      className="text-slate-600 truncate max-w-[4.5rem]"
+                      title="Council"
+                    >
+                      {s.council_id ?? 'default'}
+                    </span>
                     <span className="ml-auto tabular-nums">
                       {formatSessionTime(s.updated_ts)}
                     </span>
@@ -787,6 +822,38 @@ export default function App() {
                     : 'Checking…'}
               </span>
             </div>
+            <label className="flex items-center gap-1.5 min-w-0 shrink max-w-[min(42vw,9.5rem)] sm:max-w-[11rem]">
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium hidden sm:inline shrink-0">
+                Council
+              </span>
+              <select
+                className="min-w-0 flex-1 text-xs leading-tight py-1.5 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/35 focus:ring-offset-0 disabled:opacity-50"
+                value={
+                  sessionId
+                    ? (sessionCouncilId ?? 'default')
+                    : councilForNew
+                }
+                onChange={(e) => {
+                  if (!sessionId) setCouncilForNew(e.target.value)
+                }}
+                disabled={!!sessionId || busy}
+                title={
+                  sessionId
+                    ? 'This chat is locked to the council you started with'
+                    : 'Agent council for the next new chat (config/councils/<id>.json)'
+                }
+                aria-label="Council"
+              >
+                {councils.length === 0 && (
+                  <option value="default">default</option>
+                )}
+                {councils.map((cid) => (
+                  <option key={cid} value={cid}>
+                    {cid}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="flex items-center gap-2 min-w-0 grow sm:grow-0 sm:shrink sm:max-w-[min(50vw,16rem)]">
               <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium hidden sm:inline shrink-0">
                 Model

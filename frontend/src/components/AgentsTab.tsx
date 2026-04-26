@@ -7,7 +7,15 @@ import {
   type ChangeEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { getCouncil, putCouncil, type AgentDef, type CouncilConfig } from '../api'
+import {
+  createCouncil,
+  deleteCouncil,
+  getCouncil,
+  listCouncils,
+  putCouncil,
+  type AgentDef,
+  type CouncilConfig,
+} from '../api'
 import {
   councilConfigToJsonString,
   configSignature,
@@ -153,7 +161,16 @@ function nextSelection(
   return fromLinearPos(cur + dir, debateLen)
 }
 
+const NEW_COUNCIL_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
+function isValidNewCouncilId(s: string) {
+  const t = s.trim()
+  return t.length > 0 && t.length <= 64 && NEW_COUNCIL_ID_RE.test(t)
+}
+
 export function AgentsTab() {
+  const [councilId, setCouncilId] = useState('default')
+  const [councilIds, setCouncilIds] = useState<string[]>(['default'])
   const [config, setConfig] = useState<CouncilConfig | null>(null)
   const [baselineSig, setBaselineSig] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -162,6 +179,13 @@ export function AgentsTab() {
   const [saving, setSaving] = useState(false)
   const [sel, setSel] = useState<Selection | null>(null)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newCouncilName, setNewCouncilName] = useState('')
+  const [createFromId, setCreateFromId] = useState('default')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const fileImportRef = useRef<HTMLInputElement>(null)
   const configRef = useRef<CouncilConfig | null>(null)
   useEffect(() => {
@@ -206,7 +230,7 @@ export function AgentsTab() {
       }
       setLoadError(null)
       try {
-        const c = await getCouncil()
+        const c = await getCouncil(councilId)
         setConfigFromServer(c)
         setSaveError(null)
         setSaved(false)
@@ -216,14 +240,161 @@ export function AgentsTab() {
         )
       }
     },
-    [setConfigFromServer, config, baselineSig]
+    [setConfigFromServer, config, baselineSig, councilId]
   )
+
+  const onPickCouncil = useCallback(
+    async (id: string) => {
+      if (id === councilId) return
+      if (config && baselineSig != null && configSignature(config) !== baselineSig) {
+        if (
+          !window.confirm(
+            'You have unsaved changes. Switch council and lose local edits?'
+          )
+        ) {
+          return
+        }
+      }
+      setLoadError(null)
+      setSaveError(null)
+      setDeleteError(null)
+      setSaved(false)
+      setCouncilId(id)
+      try {
+        const c = await getCouncil(id)
+        setConfigFromServer(c)
+        const fresh = await listCouncils()
+        if (fresh.length) setCouncilIds(fresh)
+      } catch (e) {
+        setLoadError(
+          e instanceof Error ? e.message : 'Failed to load council config'
+        )
+      }
+    },
+    [councilId, config, baselineSig, setConfigFromServer]
+  )
+
+  const onCreateCouncil = useCallback(async () => {
+    const id = newCouncilName.trim()
+    if (!isValidNewCouncilId(id)) {
+      setCreateError(
+        'Id: letter or number, then letters, numbers, _ or -, max 64 characters.'
+      )
+      return
+    }
+    if (id === createFromId) {
+      setCreateError('New id must differ from the template council you copy from.')
+      return
+    }
+    if (config && baselineSig != null && configSignature(config) !== baselineSig) {
+      if (
+        !window.confirm(
+          'You have unsaved changes on the current profile. Create a new council file anyway?'
+        )
+      ) {
+        return
+      }
+    }
+    setCreateError(null)
+    setCreating(true)
+    try {
+      await createCouncil(id, createFromId)
+      const fresh = await listCouncils()
+      if (fresh.length) setCouncilIds(fresh)
+      setCouncilId(id)
+      const c = await getCouncil(id)
+      setConfigFromServer(c)
+      setLoadError(null)
+      setSaveError(null)
+      setSaved(false)
+      setCreateOpen(false)
+      setNewCouncilName('')
+      setDeleteError(null)
+    } catch (e) {
+      setCreateError(
+        e instanceof Error ? e.message : 'Failed to create council'
+      )
+    } finally {
+      setCreating(false)
+    }
+  }, [
+    newCouncilName,
+    createFromId,
+    config,
+    baselineSig,
+    setConfigFromServer,
+  ])
+
+  const onDeleteCurrentCouncil = useCallback(async () => {
+    if (councilIds.length <= 1) return
+    if (
+      !window.confirm(
+        `Delete council "${councilId}"? This removes the file on the server. This cannot be undone.`
+      )
+    ) {
+      return
+    }
+    if (config && baselineSig != null && configSignature(config) !== baselineSig) {
+      if (
+        !window.confirm(
+          'You have unsaved changes on this profile. They will be lost when the file is deleted. Continue?'
+        )
+      ) {
+        return
+      }
+    }
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      await deleteCouncil(councilId)
+      const fresh = await listCouncils()
+      if (!fresh.length) {
+        setLoadError(
+          'No council files in config/councils/. Add a .json file or the default council.'
+        )
+        return
+      }
+      setCouncilIds(fresh)
+      const nextId = fresh[0]!
+      setCouncilId(nextId)
+      const c = await getCouncil(nextId)
+      setConfigFromServer(c)
+      setLoadError(null)
+      setSaveError(null)
+      setSaved(false)
+    } catch (e) {
+      setDeleteError(
+        e instanceof Error ? e.message : 'Failed to delete council'
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }, [
+    councilId,
+    councilIds.length,
+    config,
+    baselineSig,
+    setConfigFromServer,
+  ])
 
   useEffect(() => {
     let cancel = false
     void (async () => {
       try {
-        const c = await getCouncil()
+        const ids = await listCouncils()
+        if (cancel) return
+        if (!ids.length) {
+          if (!cancel) {
+            setLoadError(
+              'No council files in config/councils/. Add a .json file or the default council.'
+            )
+          }
+          return
+        }
+        setCouncilIds(ids)
+        const pick = ids.includes('default') ? 'default' : ids[0]!
+        if (!cancel) setCouncilId(pick)
+        const c = await getCouncil(pick)
         if (cancel) return
         setConfigFromServer(c)
       } catch (e) {
@@ -358,7 +529,7 @@ export function AgentsTab() {
     setSaved(false)
     setSaving(true)
     try {
-      await putCouncil(config)
+      await putCouncil(config, councilId)
       setBaselineSig(configSignature(config))
       setSaved(true)
     } catch (e) {
@@ -366,7 +537,7 @@ export function AgentsTab() {
     } finally {
       setSaving(false)
     }
-  }, [config])
+  }, [config, councilId])
 
   const exportJson = useCallback(() => {
     if (!config) return
@@ -376,10 +547,10 @@ export function AgentsTab() {
         type: 'application/json;charset=utf-8',
       })
     )
-    a.download = 'council.json'
+    a.download = `council-${councilId}.json`
     a.click()
     URL.revokeObjectURL(a.href)
-  }, [config])
+  }, [config, councilId])
 
   const onImportFile = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
@@ -425,6 +596,12 @@ export function AgentsTab() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && createOpen) {
+        e.preventDefault()
+        e.stopPropagation()
+        setCreateOpen(false)
+        return
+      }
       if (e.key === 'Escape' && editorOpen) {
         e.preventDefault()
         e.stopPropagation()
@@ -449,16 +626,16 @@ export function AgentsTab() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onNavAgent, editorOpen])
+  }, [onNavAgent, editorOpen, createOpen])
 
   useEffect(() => {
-    if (!editorOpen) return
+    if (!editorOpen && !createOpen) return
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
       document.body.style.overflow = prev
     }
-  }, [editorOpen])
+  }, [editorOpen, createOpen])
 
   const selectedAgent = useMemo(() => {
     if (!config || !sel) return null
@@ -517,12 +694,61 @@ export function AgentsTab() {
       <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
         Pick a node to edit. The <span className="text-slate-200">row</span> is debate order
         (each round); the <span className="text-violet-300/90">Synthesizer</span> condenses
-        agreement before the plan writer. Config is written to{' '}
-        <code className="text-slate-500">config/council.json</code> on save.
+        agreement before the plan writer. Each profile is a file under{' '}
+        <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
       </p>
 
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 rounded-xl border border-white/[0.08] bg-slate-900/30 px-3 py-2.5">
+        <label className="flex items-center gap-2 text-xs text-slate-400 shrink-0 min-w-0 max-w-full sm:max-w-[12rem]">
+          <span className="shrink-0">Editing</span>
+          <select
+            className="min-w-0 flex-1 text-xs py-1.5 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100"
+            value={councilId}
+            onChange={(e) => {
+              void onPickCouncil(e.target.value)
+            }}
+            title="Which council file to view and save"
+            aria-label="Council profile"
+          >
+            {councilIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            setCreateError(null)
+            setDeleteError(null)
+            setNewCouncilName('')
+            setCreateFromId(councilId)
+            setCreateOpen(true)
+          }}
+          className="shrink-0 text-xs font-medium rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-1.5 text-violet-200 hover:bg-violet-500/20"
+        >
+          New council…
+        </button>
+        <button
+          type="button"
+          onClick={() => void onDeleteCurrentCouncil()}
+          disabled={councilIds.length <= 1 || deleting}
+          className="shrink-0 text-xs font-medium rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-rose-200 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+          title={
+            councilIds.length <= 1
+              ? 'At least one council must remain'
+              : `Delete config/councils/${councilId}.json on the server`
+          }
+        >
+          {deleting ? 'Deleting…' : 'Delete…'}
+        </button>
         <div className="flex flex-wrap items-center gap-2 min-w-0">
+          {deleteError && (
+            <span className="text-xs text-amber-200/95 max-w-[12rem] sm:max-w-none" title={deleteError}>
+              {deleteError}
+            </span>
+          )}
           {dirty && (
             <span className="text-xs font-medium text-amber-200/95 rounded-full border border-amber-500/30 bg-amber-950/40 px-2.5 py-0.5">
               Unsaved changes
@@ -843,6 +1069,94 @@ export function AgentsTab() {
                       Done
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
+
+        {createOpen &&
+          createPortal(
+            <div
+              className="fixed inset-0 z-[100] flex items-end justify-center sm:items-center p-0 sm:p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="council-new-title"
+            >
+              <button
+                type="button"
+                className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+                aria-label="Close"
+                onClick={() => setCreateOpen(false)}
+              />
+              <div
+                className="relative z-10 w-full max-w-md rounded-t-2xl border border-white/10 bg-[#0c0e16] p-4 shadow-2xl sm:rounded-2xl sm:mt-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h2
+                  id="council-new-title"
+                  className="text-base font-semibold text-slate-100"
+                >
+                  New council
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Creates <code className="text-slate-400">config/councils/&lt;id&gt;.json</code> by
+                  copying an existing file.
+                </p>
+                <div className="mt-4 space-y-3">
+                  <label className="block text-xs text-slate-400">
+                    New id
+                    <input
+                      type="text"
+                      className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 font-mono focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+                      value={newCouncilName}
+                      onChange={(e) => setNewCouncilName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !creating) {
+                          e.preventDefault()
+                          void onCreateCouncil()
+                        }
+                      }}
+                      placeholder="e.g. my_council"
+                      autoComplete="off"
+                      autoFocus
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-400">
+                    Copy from
+                    <select
+                      className="mt-1 w-full text-sm py-2 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100"
+                      value={createFromId}
+                      onChange={(e) => setCreateFromId(e.target.value)}
+                    >
+                      {councilIds.map((id) => (
+                        <option key={id} value={id}>
+                          {id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {createError && (
+                  <p className="mt-3 text-xs text-amber-200/95">{createError}</p>
+                )}
+                <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCreateOpen(false)}
+                    className="text-sm font-medium text-slate-400 hover:text-slate-200"
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onCreateCouncil()}
+                    disabled={creating || !newCouncilName.trim()}
+                    className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-3 py-2 text-sm font-medium text-white"
+                  >
+                    {creating ? 'Creating…' : 'Create'}
+                  </button>
                 </div>
               </div>
             </div>,

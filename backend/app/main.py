@@ -13,6 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .council_config import CouncilConfigFile, load_council_config, save_council_config
+from .councils import (
+    delete_council,
+    ensure_default_council_file,
+    list_council_ids,
+    load_council,
+    save_council,
+    validate_council_id,
+)
 from .config import get_settings
 from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
@@ -31,11 +39,19 @@ store = DatabaseSessionStore(_engine)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     s = get_settings()
-    p = s.council_config_path
+    ensure_default_council_file(s.councils_dir, s.council_config_path)
+    p = s.councils_dir / "default.json"
+    if not p.is_file() and s.council_config_path.is_file():
+        p = s.council_config_path
     if p.is_file():
-        load_council_config(p)
+        try:
+            load_council_config(p)
+        except (OSError, json.JSONDecodeError) as e:
+            log.warning("Could not read council at %s: %s", p, e)
     else:
-        log.warning("Missing council config at %s; create config/council.json", p)
+        log.warning(
+            "No council config; add config/councils/default.json (or config/council.json for legacy default)."
+        )
     yield
 
 
@@ -56,6 +72,10 @@ app.add_middleware(
 
 class CreateSessionBody(BaseModel):
     model: str | None = Field(default=None, description="Ollama or provider model name")
+    council_id: str = Field(
+        default="default",
+        description="Agent council (file config/councils/{id}.json)",
+    )
 
 
 class PostMessageBody(BaseModel):
@@ -63,12 +83,14 @@ class PostMessageBody(BaseModel):
     model: str | None = None
 
 
-def _require_council():
-    s = get_settings()
-    p = s.council_config_path
-    if not p.is_file():
-        raise HTTPException(500, f"Council config missing: {p}")
-    return load_council_config(p)
+def _require_council_for_id(council_id: str) -> CouncilConfigFile:
+    st = get_settings()
+    try:
+        return load_council(council_id, st.councils_dir, st.council_config_path)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"Unknown or missing council: {council_id!r}") from e
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(500, f"Invalid council config: {e}") from e
 
 
 async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> str:
@@ -87,23 +109,108 @@ async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> st
     return s.model
 
 
+@app.get("/api/councils", response_model=None)
+async def list_councils() -> dict[str, Any]:
+    s = get_settings()
+    ensure_default_council_file(s.councils_dir, s.council_config_path)
+    return {"councils": list_council_ids(s.councils_dir, s.council_config_path)}
+
+
+class CreateCouncilBody(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64, description="New file config/councils/{id}.json")
+    from_id: str = Field(
+        default="default",
+        description="Template council to copy (debating_agents + synthesizer)",
+    )
+
+
+@app.post("/api/councils", response_model=None)
+async def create_council(body: CreateCouncilBody) -> dict[str, str]:
+    s = get_settings()
+    new_id = body.id.strip()
+    from_id = (body.from_id or "default").strip() or "default"
+    if not validate_council_id(new_id):
+        raise HTTPException(
+            400,
+            "Invalid id: use letters, numbers, _ or - only (1–64 chars, must start with letter or number)",
+        )
+    if not validate_council_id(from_id):
+        raise HTTPException(400, "Invalid from_id")
+    if new_id == from_id:
+        raise HTTPException(400, "New id must differ from template from_id")
+    target = s.councils_dir / f"{new_id}.json"
+    if target.is_file():
+        raise HTTPException(409, f"Council {new_id!r} already exists")
+    try:
+        template = load_council(from_id, s.councils_dir, s.council_config_path)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"Template council not found: {from_id!r}") from e
+    try:
+        p = save_council(new_id, s.councils_dir, template)
+    except OSError as e:
+        log.error("Could not create council file: %s", e)
+        raise HTTPException(500, f"Could not create council: {e}") from e
+    return {"status": "ok", "id": new_id, "path": str(p)}
+
+
+@app.get("/api/councils/{council_id}", response_model=None)
+async def get_council_by_id(council_id: str) -> dict[str, Any]:
+    if not validate_council_id(council_id.strip() or ""):
+        raise HTTPException(400, "Invalid council_id")
+    c = _require_council_for_id(council_id)
+    return c.model_dump(mode="json")
+
+
+@app.put("/api/councils/{council_id}", response_model=None)
+async def put_council_by_id(
+    council_id: str, body: CouncilConfigFile
+) -> dict[str, str]:
+    s = get_settings()
+    if not validate_council_id(council_id.strip() or ""):
+        raise HTTPException(400, "Invalid council_id")
+    try:
+        p = save_council(council_id, s.councils_dir, body)
+    except OSError as e:
+        log.error("Could not write council: %s", e)
+        raise HTTPException(500, f"Could not save council: {e}") from e
+    return {"status": "ok", "id": council_id, "path": str(p)}
+
+
+@app.delete("/api/councils/{council_id}", response_model=None)
+async def delete_council_by_id(council_id: str) -> dict[str, str]:
+    s = get_settings()
+    ensure_default_council_file(s.councils_dir, s.council_config_path)
+    if not validate_council_id(council_id.strip() or ""):
+        raise HTTPException(400, "Invalid council_id")
+    try:
+        delete_council(council_id, s.councils_dir, s.council_config_path)
+    except ValueError as e:
+        raise HTTPException(400, str(e) or "cannot delete") from e
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"Unknown council: {council_id!r}") from e
+    except OSError as e:
+        log.error("Could not delete council: %s", e)
+        raise HTTPException(500, f"Could not delete council: {e}") from e
+    return {"status": "ok", "id": (council_id or "").strip()}
+
+
 @app.get("/api/council", response_model=None)
 async def get_council() -> dict[str, Any]:
-    c = _require_council()
+    """Backward compatible: same as GET /api/councils/default."""
+    c = _require_council_for_id("default")
     return c.model_dump(mode="json")
 
 
 @app.put("/api/council", response_model=None)
 async def put_council(body: CouncilConfigFile) -> dict[str, str]:
-    """Replace council.json on disk. Next pipeline run uses the new config."""
-    settings = get_settings()
-    p = settings.council_config_path
+    """Backward compatible: same as PUT /api/councils/default."""
+    s = get_settings()
     try:
-        save_council_config(p, body)
+        p = save_council("default", s.councils_dir, body)
     except OSError as e:
         log.error("Could not write council config: %s", e)
         raise HTTPException(500, f"Could not save council config: {e}") from e
-    return {"status": "ok", "path": str(p)}
+    return {"status": "ok", "path": str(p), "id": "default"}
 
 
 @app.get("/api/health")
@@ -158,7 +265,6 @@ async def list_models() -> dict[str, Any]:
 
 @app.post("/api/sessions", response_model=None)
 async def create_session(body: CreateSessionBody = Body(...)) -> JSONResponse:
-    _require_council()
     st = get_settings()
     m = (body.model or "").strip() if body.model else ""
     if not m:
@@ -169,12 +275,17 @@ async def create_session(body: CreateSessionBody = Body(...)) -> JSONResponse:
             m = st.openai_model
         else:
             m = st.anthropic_model
-    sess = store.create(m)
+    council_id = (body.council_id or "default").strip() or "default"
+    if not validate_council_id(council_id):
+        raise HTTPException(400, "Invalid council_id (use a–z, 0–9, _ or -, max 64 chars)")
+    _require_council_for_id(council_id)
+    sess = store.create(m, council_id=council_id)
     return JSONResponse(
         {
             "id": sess.id,
             "title": getattr(sess, "title", "") or "",
             "model": sess.model,
+            "council_id": sess.council_id,
             "phase": sess.phase.value,
         }
     )
@@ -202,6 +313,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
         "id": sess.id,
         "title": getattr(sess, "title", "") or "",
         "model": sess.model,
+        "council_id": getattr(sess, "council_id", "default") or "default",
         "phase": sess.phase.value,
         "created_ts": getattr(sess, "created_ts", 0),
         "updated_ts": getattr(sess, "updated_ts", 0),
@@ -227,7 +339,6 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/message", response_class=StreamingResponse)
 async def post_message(session_id: str, body: PostMessageBody) -> StreamingResponse:
-    c = _require_council()
     settings = get_settings()
     content = (body.content or "").strip()
     if not content:
@@ -235,6 +346,9 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
     sess = store.get(session_id)
     if not sess:
         raise HTTPException(404, "Session not found")
+    c = _require_council_for_id(
+        (getattr(sess, "council_id", None) or "default").strip() or "default"
+    )
 
     if sess.phase == SessionPhase.done:
         sess.phase = SessionPhase.idle
