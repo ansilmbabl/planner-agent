@@ -14,6 +14,20 @@ type MessageMarkdownProps = {
   className?: string
 }
 
+/** LLMs often wrap the whole document in ```markdown fences; strip so tables/lists render. */
+function normalizePanelMarkdown(raw: string): string {
+  let t = String(raw || '').replace(/\r\n/g, '\n')
+  for (let i = 0; i < 2; i++) {
+    const m = t.match(/^\s*```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i)
+    if (m) {
+      t = m[1]!.trim()
+      continue
+    }
+    break
+  }
+  return t
+}
+
 function extractTextFromPre(node: ReactNode): string {
   if (node == null) return ''
   if (typeof node === 'string' || typeof node === 'number') {
@@ -85,6 +99,8 @@ export function MessageMarkdown({
   const sizeClass =
     size === 'message' ? 'prose-chat prose-chat--message' : 'prose-chat prose-chat--panel'
 
+  const markdownSource = size === 'panel' ? normalizePanelMarkdown(text) : text
+
   return (
     <div className={`${sizeClass} mt-1.5 ${className}`.trim()}>
       <ReactMarkdown
@@ -145,7 +161,7 @@ export function MessageMarkdown({
           td: (props) => <td className="border-b border-slate-700/50 px-2 py-1.5" {...props} />,
         }}
       >
-        {text}
+        {markdownSource}
       </ReactMarkdown>
     </div>
   )

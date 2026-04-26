@@ -22,7 +22,13 @@ from .llm import (
 )
 from .plan_model import PlanSpec, plan_spec_json_schema_hint
 from .plan_render import render_plan_md
-from .session import ChatMessage, CouncilSession, SessionPhase, SessionStore
+from .session import (
+    ChatMessage,
+    CouncilSession,
+    SessionPhase,
+    SessionStore,
+    archive_current_plan,
+)
 from .tools.fetch_url import fetch_url_text
 from .tools.search import ddg_search
 
@@ -30,6 +36,17 @@ RESEARCH_PENDING_PLACEHOLDER = (
     "_(No web research yet for this message — the orchestrator may choose `run_research` next, "
     "or answer / call agents if that is sufficient.)_"
 )
+
+
+def council_prompt_brief(s: CouncilSession) -> str:
+    """Full idea text for council prompts, including a chat follow-up when iterating on a plan."""
+    base = (s.user_brief or "").strip()
+    extra = (getattr(s, "plan_iteration_message", None) or "").strip()
+    if not extra:
+        return base
+    return (
+        f"{base}\n\n---\n**User follow-up (incorporate into the revised plan):**\n{extra}\n"
+    )
 
 
 def effective_orchestrator(council: CouncilConfigFile) -> AgentDef:
@@ -259,7 +276,7 @@ async def _run_synthesizer_step(
         settings,
         syn,
         s.model,
-        s.user_brief,
+        council_prompt_brief(s),
         s.research_brief,
         all_turns_txt,
     )
@@ -352,14 +369,15 @@ async def _summarize_research(
 
 async def _run_web_research_phase(settings: Settings, s: CouncilSession) -> None:
     """Search, optional URL fetches, summarize; updates s.research_sources and s.research_brief."""
-    sp = await _generate_search_plan(settings, s.user_brief, s.model)
+    brief = council_prompt_brief(s)
+    sp = await _generate_search_plan(settings, brief, s.model)
     qlist = [
         str(x)
         for x in (sp.get("queries") or [])
         if str(x).strip()
     ][: settings.research_max_queries]
-    if not qlist and s.user_brief.strip():
-        first = s.user_brief.strip().split("\n", 1)[0].strip()[:200]
+    if not qlist and brief.strip():
+        first = brief.strip().split("\n", 1)[0].strip()[:200]
         qlist = [first] if first else []
     urls = [
         str(u)
@@ -380,7 +398,7 @@ async def _run_web_research_phase(settings: Settings, s: CouncilSession) -> None
         for r in sources
     ]
     s.research_brief = await _summarize_research(
-        settings, s.user_brief, sources, fetches, s.model
+        settings, brief, sources, fetches, s.model
     )
 
 
@@ -473,14 +491,24 @@ async def _plan_writer(
     research_brief: str,
     syn_summary: str,
     all_turns: str,
+    *,
+    prior_plan_markdown: str | None = None,
 ) -> PlanSpec:
     system = "You are a planning writer for agentic software. Return JSON only. Use checklist items with done: false."
+    prior = (prior_plan_markdown or "").strip()
+    prior_block = (
+        f"## Prior plan (revise — user asked for improvements; keep what still applies)\n{prior[:24_000]}"
+        if prior
+        else "## Prior plan\n_(none — first version)_"
+    )
     user = f"""Create an implementation plan as JSON.
 
 {plan_spec_json_schema_hint()}
 
 ## User request
 {user_brief}
+
+{prior_block}
 
 ## Research
 {research_brief}
@@ -543,7 +571,7 @@ async def _orchestrate_discussion_loop(
             settings,
             orch,
             s.model,
-            s.user_brief,
+            council_prompt_brief(s),
             s.research_brief,
             transcript,
             debaters,
@@ -627,7 +655,7 @@ async def _orchestrate_discussion_loop(
                     settings,
                     orch,
                     s.model,
-                    s.user_brief,
+                    council_prompt_brief(s),
                     s.research_brief,
                     transcript,
                 )
@@ -689,7 +717,7 @@ async def _orchestrate_discussion_loop(
                     settings,
                     ag,
                     s.model,
-                    s.user_brief,
+                    council_prompt_brief(s),
                     s.research_brief,
                     transcript,
                     r,
@@ -745,6 +773,8 @@ async def run_council_pipeline(
     session: CouncilSession,
     user_message: str,
     council: CouncilConfigFile,
+    *,
+    continue_from_plan: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     s = session
     s.error_message = None
@@ -776,26 +806,51 @@ async def run_council_pipeline(
             if s.phase == SessionPhase.awaiting_user:
                 return
         else:
-            s.user_brief = user_message.strip()
-            if not (s.title or "").strip():
-                s.title = (s.user_brief.split("\n")[0].strip() or "New plan")[:80]
-            s.messages.append(ChatMessage(role="user", content=s.user_brief))
-            s.agent_turns = []
-            s.user_answered_clarification = False
-            s.plan_markdown = ""
-            s.last_consolidated_questions = []
-            s.synthesizer_ran = False
-            s.last_synth_summary = ""
-            s.discussion_round = 0
+            if continue_from_plan:
+                s.plan_iteration_message = user_message.strip()
+                s.messages.append(
+                    ChatMessage(
+                        role="user",
+                        content=user_message.strip(),
+                        meta={"kind": "plan_iteration"},
+                    )
+                )
+                s.agent_turns = []
+                s.user_answered_clarification = False
+                s.last_consolidated_questions = []
+                s.synthesizer_ran = False
+                s.last_synth_summary = ""
+                s.discussion_round = 0
+                s.phase = SessionPhase.discussion
+                yield {
+                    "type": "phase",
+                    "phase": SessionPhase.discussion.value,
+                    "message": "Continuing session — routing next step with your new input",
+                }
+            else:
+                s.plan_iteration_message = ""
+                s.user_brief = user_message.strip()
+                if not (s.title or "").strip():
+                    s.title = (s.user_brief.split("\n")[0].strip() or "New plan")[:80]
+                s.messages.append(ChatMessage(role="user", content=s.user_brief))
+                s.agent_turns = []
+                s.user_answered_clarification = False
+                if (s.plan_markdown or "").strip():
+                    archive_current_plan(s, "before_new_run")
+                s.plan_markdown = ""
+                s.last_consolidated_questions = []
+                s.synthesizer_ran = False
+                s.last_synth_summary = ""
+                s.discussion_round = 0
 
-            s.research_sources = []
-            s.research_brief = RESEARCH_PENDING_PLACEHOLDER
-            s.phase = SessionPhase.discussion
-            yield {
-                "type": "phase",
-                "phase": SessionPhase.discussion.value,
-                "message": "Orchestrator routing — choosing the next step",
-            }
+                s.research_sources = []
+                s.research_brief = RESEARCH_PENDING_PLACEHOLDER
+                s.phase = SessionPhase.discussion
+                yield {
+                    "type": "phase",
+                    "phase": SessionPhase.discussion.value,
+                    "message": "Orchestrator routing — choosing the next step",
+                }
             async for ev in _orchestrate_discussion_loop(
                 settings, s, council, debaters, orch
             ):
@@ -814,6 +869,7 @@ async def run_council_pipeline(
 
     if s.skip_implementation_plan:
         s.phase = SessionPhase.done
+        s.plan_iteration_message = ""
         yield {"type": "done"}
         return
 
@@ -833,16 +889,21 @@ async def run_council_pipeline(
             "phase": SessionPhase.plan.value,
             "message": "Writing plan.md",
         }
+        prior_md: str | None = None
+        if (getattr(s, "plan_iteration_message", None) or "").strip() and s.plan_versions:
+            prior_md = str(s.plan_versions[-1].get("markdown") or "").strip() or None
         spec = await _plan_writer(
             settings,
             s.model,
-            s.user_brief,
+            council_prompt_brief(s),
             s.research_brief,
             syn_text,
             all_turns_txt,
+            prior_plan_markdown=prior_md,
         )
         s.plan_markdown = render_plan_md(spec)
         s.plan_filename = _filename_from_title(spec.title)
+        s.plan_iteration_message = ""
         s.phase = SessionPhase.done
         s.messages.append(
             ChatMessage(
@@ -857,6 +918,7 @@ async def run_council_pipeline(
             "type": "plan",
             "content": s.plan_markdown,
             "filename": s.plan_filename,
+            "plan_versions": list(getattr(s, "plan_versions", None) or []),
         }
         yield {"type": "done"}
     except Exception as e:  # noqa: BLE001

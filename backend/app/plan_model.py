@@ -22,6 +22,39 @@ def _str_list_to_objects(items: Any, key: str) -> list[Any]:
     return out
 
 
+def _normalize_operations(items: Any) -> list[dict[str, Any]]:
+    """LLMs often return ['task a', 'task b'] instead of [{name, value}, ...]."""
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for el in items:
+        if isinstance(el, str):
+            s = el.strip()
+            if s:
+                out.append({"name": s, "value": ""})
+        elif isinstance(el, dict):
+            row = dict(el)
+            name = str(row.get("name", "") or "").strip()
+            value = str(row.get("value", "") or "").strip()
+            if not name:
+                for alt in ("description", "item", "title", "task"):
+                    v = row.get(alt)
+                    if v is not None and str(v).strip():
+                        name = str(v).strip()
+                        break
+            if not value:
+                for alt in ("detail", "notes", "body"):
+                    v = row.get(alt)
+                    if v is not None and str(v).strip():
+                        value = str(v).strip()
+                        break
+            if name or value:
+                out.append({"name": name or value, "value": value if name else ""})
+    return out
+
+
 def _normalize_tech_stack(items: Any) -> list[dict[str, Any]]:
     """LLMs often omit choice or rationale on tech_stack rows; fill defaults."""
     if items is None:
@@ -133,6 +166,7 @@ def _normalize_plan_spec_dict(d: Any) -> dict[str, Any]:
     d["constraints"] = _str_list_to_objects(d.get("constraints"), "description")
     d["open_questions"] = _str_list_to_objects(d.get("open_questions"), "question")
     d["testing"] = _str_list_to_objects(d.get("testing"), "item")
+    d["operations"] = _normalize_operations(d.get("operations"))
     d["tech_stack"] = _normalize_tech_stack(d.get("tech_stack"))
     # Checklist: sometimes list of task strings
     ch = d.get("checklist")
@@ -150,7 +184,7 @@ def _normalize_plan_spec_dict(d: Any) -> dict[str, Any]:
 def plan_spec_json_schema_hint() -> str:
     return """
 Return a single JSON object with these keys.
-For non_goals, constraints, and open_questions you may use either an array of objects (preferred) or a simple array of strings (each string is coerced).
+For non_goals, constraints, open_questions, testing, and operations you may use either an array of objects (preferred) or a simple array of strings (each string is coerced).
 
 {
   "title": "string",

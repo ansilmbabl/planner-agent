@@ -18,6 +18,7 @@ import {
   patchSessionCouncil,
   type CouncilConfig,
   type HealthResponse,
+  type PlanVersion,
   type SessionListItem,
   type SessionMessage,
   type SseEvent,
@@ -40,6 +41,18 @@ type FeedItem = {
 
 function simpleId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function formatPlanVersionTs(ts: number): string {
+  if (!ts) return ''
+  try {
+    return new Date(ts * 1000).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    })
+  } catch {
+    return ''
+  }
 }
 
 function eventLabel(ev: SseEvent): {
@@ -156,6 +169,9 @@ function eventLabel(ev: SseEvent): {
   if (t === 'error') {
     const e = ev as { message: string }
     return { kind: 'err', lane: 'chat', title: 'Error', body: e.message }
+  }
+  if (t === 'plan_snapshot') {
+    return { kind: 'phase', lane: 'process', title: '', body: '' }
   }
   if (t === 'plan') {
     return {
@@ -404,6 +420,10 @@ export default function App() {
   const [awaiting, setAwaiting] = useState(false)
   const [planMd, setPlanMd] = useState('')
   const [planName, setPlanName] = useState('plan.md')
+  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([])
+  const [planVersionPick, setPlanVersionPick] = useState<'latest' | number>(
+    'latest'
+  )
   const [research, setResearch] = useState<{
     brief: string
     sources: { title: string; href: string }[]
@@ -414,6 +434,8 @@ export default function App() {
   const [refineInstruction, setRefineInstruction] = useState('')
   const [refineSelection, setRefineSelection] = useState('')
   const [refineAgentIds, setRefineAgentIds] = useState<string[]>(['orchestrator'])
+  /** When the last run finished, chat send can extend the session instead of wiping it. */
+  const [continuePlanFromChat, setContinuePlanFromChat] = useState(true)
 
   const streamAbort = useRef<AbortController | null>(null)
   const planPreviewRef = useRef<HTMLDivElement | null>(null)
@@ -427,6 +449,19 @@ export default function App() {
   useEffect(() => {
     viewingSessionIdRef.current = sessionId
   }, [sessionId])
+
+  useEffect(() => {
+    if (phase === 'done') {
+      setContinuePlanFromChat(true)
+    }
+  }, [phase])
+
+  useEffect(() => {
+    if (planVersionPick === 'latest') return
+    if (planVersionPick < 0 || planVersionPick >= planVersions.length) {
+      setPlanVersionPick('latest')
+    }
+  }, [planVersionPick, planVersions.length])
 
   useEffect(() => {
     setRefineInstruction('')
@@ -559,6 +594,27 @@ export default function App() {
     return sessionList.find((s) => s.id === sessionId)?.title || null
   }, [sessionId, sessionList])
 
+  const displayedPlanMd = useMemo(() => {
+    if (planVersionPick === 'latest') return planMd
+    const v = planVersions[planVersionPick]
+    return v?.markdown ?? ''
+  }, [planVersionPick, planMd, planVersions])
+
+  const displayedPlanFilename = useMemo(() => {
+    if (planVersionPick === 'latest') return planName
+    const v = planVersions[planVersionPick]
+    if (!v) return planName
+    const stem = (v.filename.replace(/\.md$/i, '') || 'plan').replace(
+      /[^\w\-./]+/g,
+      '_'
+    )
+    const stamp = new Date(v.created_ts * 1000)
+      .toISOString()
+      .slice(0, 19)
+      .replace(/[:-]/g, '')
+    return `${stem}_archived_${stamp}.md`
+  }, [planVersionPick, planName, planVersions])
+
   useEffect(() => {
     scrollToBottom()
   }, [feed, busy])
@@ -567,6 +623,8 @@ export default function App() {
     setFeed([])
     setPlanMd('')
     setPlanName('plan.md')
+    setPlanVersions([])
+    setPlanVersionPick('latest')
     setResearch(null)
     setPhase('')
     setAwaiting(false)
@@ -587,6 +645,10 @@ export default function App() {
     setAwaiting((data.phase || '') === 'awaiting_user')
     setPlanMd(data.plan_markdown || '')
     setPlanName(data.plan_filename || 'plan.md')
+    setPlanVersions(
+      Array.isArray(data.plan_versions) ? data.plan_versions : []
+    )
+    setPlanVersionPick('latest')
     if (data.research_brief) {
       setResearch({
         brief: data.research_brief,
@@ -685,27 +747,48 @@ export default function App() {
   const pushFeed = (ev: SseEvent) => {
     if (!ev || typeof ev !== 'object' || !('type' in ev)) return
     if (!applyStreamToUi()) return
-    if ((ev as { type: string }).type === 'plan') {
-      const p = ev as { content: string; filename: string }
+    const evType = (ev as { type: string }).type
+    if (evType === 'plan_snapshot') {
+      const snap = ev as {
+        plan_markdown?: string
+        plan_filename?: string
+        plan_versions?: PlanVersion[]
+      }
+      setPlanMd(snap.plan_markdown || '')
+      setPlanName(snap.plan_filename || 'plan.md')
+      setPlanVersions(
+        Array.isArray(snap.plan_versions) ? snap.plan_versions : []
+      )
+      setPlanVersionPick('latest')
+      return
+    }
+    if (evType === 'plan') {
+      const p = ev as {
+        content: string
+        filename: string
+        plan_versions?: PlanVersion[]
+      }
       setPlanMd(p.content)
       setPlanName(p.filename || 'plan.md')
+      if (Array.isArray(p.plan_versions)) setPlanVersions(p.plan_versions)
+      setPlanVersionPick('latest')
       if (window.matchMedia('(max-width: 1023px)').matches) {
         setRightPanelTab('plan')
       }
     }
-    if ((ev as { type: string }).type === 'research') {
+    if (evType === 'research') {
       const r = ev as { brief: string; sources: { title: string; href: string }[] }
       setResearch({ brief: r.brief, sources: r.sources || [] })
       if (window.matchMedia('(max-width: 1023px)').matches) {
         setRightPanelTab('research')
       }
     }
-    if ((ev as { type: string }).type === 'awaiting_user') {
+    if (evType === 'awaiting_user') {
       setAwaiting(true)
-    } else if ((ev as { type: string }).type === 'done') {
+    } else if (evType === 'done') {
       setAwaiting(false)
     }
-    if ((ev as { type: string }).type === 'phase') {
+    if (evType === 'phase') {
       setPhase((ev as { phase: string }).phase)
     }
     const mapped = eventLabel(ev)
@@ -838,14 +921,15 @@ export default function App() {
   async function onSend() {
     const text = input.trim()
     if (!text || busy) return
-    if (
-      phase === 'done' &&
-      planMd.trim() &&
-      !window.confirm(
-        'A new chat message starts a fresh council run and clears this session’s plan and research. For targeted edits, use **Refine plan** in the Plan tab. Continue with a new run?'
-      )
-    ) {
-      return
+    const intent =
+      phase === 'done' && continuePlanFromChat ? 'continue_plan' : 'new_run'
+    if (phase === 'done' && !continuePlanFromChat) {
+      const msg = planMd.trim()
+        ? 'A new council run clears the current plan and research from this view (archived plans stay under Previous versions). Continue?'
+        : 'A new council run clears this chat and research. Continue?'
+      if (!window.confirm(msg)) {
+        return
+      }
     }
     if (!model.trim()) {
       setModelHint('Select a model from the list.')
@@ -868,7 +952,9 @@ export default function App() {
           body: text,
         },
       ])
-      for await (const ev of streamUserMessage(sid, text, model, ac.signal)) {
+      for await (const ev of streamUserMessage(sid, text, model, ac.signal, {
+        intent,
+      })) {
         if ((ev as { type?: string }).type === 'error') {
           if (applyStreamToUi()) {
             setFeed((f) => [
@@ -923,12 +1009,12 @@ export default function App() {
   }
 
   const downloadPlan = () => {
-    if (!planMd) return
+    if (!displayedPlanMd) return
     const a = document.createElement('a')
     a.href = URL.createObjectURL(
-      new Blob([planMd], { type: 'text/markdown;charset=utf-8' })
+      new Blob([displayedPlanMd], { type: 'text/markdown;charset=utf-8' })
     )
-    a.download = planName
+    a.download = displayedPlanFilename
     a.click()
     URL.revokeObjectURL(a.href)
   }
@@ -1522,6 +1608,25 @@ export default function App() {
             <div className="shrink-0 p-4 border-t border-white/[0.06] bg-[#08090c]/60 backdrop-blur-sm">
               <div className="max-w-3xl mx-auto flex gap-3 items-end">
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+                  {phase === 'done' && !awaiting ? (
+                    <label className="flex items-start gap-2 rounded-xl border border-white/[0.06] bg-violet-950/20 px-3 py-2 text-[11px] text-slate-400 leading-snug cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 rounded border-slate-600"
+                        checked={continuePlanFromChat}
+                        onChange={(e) => setContinuePlanFromChat(e.target.checked)}
+                      />
+                      <span>
+                        <span className="text-slate-200 font-medium">
+                          Improve plan from chat
+                        </span>
+                        — keep history and research; council runs again with your new input.
+                        Uncheck for a <span className="text-slate-300">fresh run</span> from this
+                        message only. Use <span className="text-slate-300">Refine plan</span> in the
+                        Plan tab for small, targeted edits.
+                      </span>
+                    </label>
+                  ) : null}
                   <textarea
                     ref={composerRef}
                     className={`w-full min-h-[52px] max-h-40 rounded-2xl border bg-[#12141c] px-4 py-3 text-[15px] text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/35 focus:border-violet-500/30 disabled:opacity-50 resize-y ${
@@ -1632,7 +1737,7 @@ export default function App() {
                 onClick={() => setRightPanelTab('plan')}
               >
                 Plan
-                {planMd && (
+                {(planMd || planVersions.length > 0) && (
                   <span
                     className="inline-flex size-1.5 rounded-full bg-violet-400"
                     title="Has content"
@@ -1684,24 +1789,69 @@ export default function App() {
                 role="tabpanel"
                 aria-labelledby="tab-plan"
               >
-                <div className="flex justify-between items-center gap-2 mb-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center mb-3">
                   <h3 className="text-sm font-medium text-slate-200">plan.md</h3>
-                  {planMd && (
-                    <button
-                      type="button"
-                      onClick={downloadPlan}
-                      className="text-xs font-medium rounded-lg bg-violet-600 hover:bg-violet-500 px-3 py-1.5 text-white"
-                    >
-                      Download
-                    </button>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {planVersions.length > 0 ? (
+                      <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                        <span className="whitespace-nowrap">Version</span>
+                        <select
+                          className="rounded-lg border border-slate-600/60 bg-slate-950/80 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/40 max-w-[14rem]"
+                          value={
+                            planVersionPick === 'latest'
+                              ? 'latest'
+                              : String(planVersionPick)
+                          }
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setPlanVersionPick(
+                              v === 'latest' ? 'latest' : Number(v)
+                            )
+                          }}
+                        >
+                          <option value="latest">Latest (current)</option>
+                          {[...planVersions].map((_v, revI) => {
+                            const idx = planVersions.length - 1 - revI
+                            const ver = planVersions[idx]!
+                            const when = formatPlanVersionTs(ver.created_ts)
+                            const src =
+                              ver.source === 'before_refine'
+                                ? 'before refine'
+                                : ver.source === 'before_new_run'
+                                  ? 'before new run'
+                                  : ver.source
+                            return (
+                              <option key={idx} value={String(idx)}>
+                                {when ? `${when} · ${src}` : src}
+                              </option>
+                            )
+                          })}
+                        </select>
+                      </label>
+                    ) : null}
+                    {displayedPlanMd ? (
+                      <button
+                        type="button"
+                        onClick={downloadPlan}
+                        className="text-xs font-medium rounded-lg bg-violet-600 hover:bg-violet-500 px-3 py-1.5 text-white"
+                      >
+                        Download
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-                {planMd ? (
+                {planVersionPick !== 'latest' ? (
+                  <p className="text-[11px] text-amber-200/80 mb-2 leading-relaxed">
+                    Viewing an archived snapshot. Refine with LLM only updates the
+                    latest plan — switch to Latest to edit the current file.
+                  </p>
+                ) : null}
+                {displayedPlanMd ? (
                   <div
                     ref={planPreviewRef}
                     className="max-h-[min(36dvh,16rem)] lg:max-h-[min(60vh,28rem)] overflow-y-auto rounded-xl border border-white/[0.08] bg-black/25 p-3 select-text cursor-text"
                   >
-                    <MessageMarkdown text={planMd} size="panel" />
+                    <MessageMarkdown text={displayedPlanMd} size="panel" />
                   </div>
                 ) : (
                   <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center">
@@ -1710,7 +1860,10 @@ export default function App() {
                     </p>
                   </div>
                 )}
-                {planMd.trim() && phase === 'done' && sessionId && (
+                {planMd.trim() &&
+                  phase === 'done' &&
+                  sessionId &&
+                  planVersionPick === 'latest' && (
                   <div className="mt-4 rounded-xl border border-violet-500/20 bg-violet-950/15 p-3 sm:p-4 space-y-3">
                     <div>
                       <h4 className="text-xs font-semibold text-violet-200/95 uppercase tracking-wide">

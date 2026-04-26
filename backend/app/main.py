@@ -4,7 +4,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +26,7 @@ from .config import get_settings
 from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
 from .plan_refine import run_plan_refine
-from .session import CouncilSession, SessionPhase
+from .session import CouncilSession, SessionPhase, archive_current_plan
 from .db import make_engine
 from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
 
@@ -83,6 +83,7 @@ class CreateSessionBody(BaseModel):
 class PostMessageBody(BaseModel):
     content: str
     model: str | None = None
+    intent: Literal["new_run", "continue_plan"] = "new_run"
 
 
 class RefinePlanBody(BaseModel):
@@ -353,11 +354,13 @@ async def get_session(session_id: str) -> dict[str, Any]:
         "created_ts": getattr(sess, "created_ts", 0),
         "updated_ts": getattr(sess, "updated_ts", 0),
         "user_brief": sess.user_brief,
+        "plan_iteration_message": getattr(sess, "plan_iteration_message", "") or "",
         "research_brief": sess.research_brief,
         "research_sources": sess.research_sources,
         "pending_user_questions": sess.pending_user_questions,
         "plan_markdown": sess.plan_markdown,
         "plan_filename": sess.plan_filename,
+        "plan_versions": list(getattr(sess, "plan_versions", None) or []),
         "error_message": sess.error_message,
         "messages": [
             {
@@ -402,19 +405,44 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
         (getattr(sess, "council_id", None) or "default").strip() or "default"
     )
 
+    if body.intent == "continue_plan" and sess.phase != SessionPhase.done:
+        raise HTTPException(
+            400,
+            "intent=continue_plan is only valid after a finished council run (phase done).",
+        )
+
     if sess.phase == SessionPhase.done:
-        sess.phase = SessionPhase.idle
-        sess.user_brief = ""
-        sess.research_brief = ""
-        sess.research_sources = []
-        sess.agent_turns = []
-        sess.messages = []
-        sess.plan_markdown = ""
-        sess.pending_user_questions = []
-        sess.user_answered_clarification = False
-        sess.error_message = None
-        sess.synthesizer_ran = False
-        sess.last_synth_summary = ""
+        if body.intent == "continue_plan":
+            if (sess.plan_markdown or "").strip():
+                archive_current_plan(sess, "before_continue_chat")
+            sess.phase = SessionPhase.idle
+            sess.plan_markdown = ""
+            sess.agent_turns = []
+            sess.pending_user_questions = []
+            sess.user_answered_clarification = False
+            sess.error_message = None
+            sess.synthesizer_ran = False
+            sess.last_synth_summary = ""
+            sess.discussion_round = 0
+            sess.last_consolidated_questions = []
+        else:
+            if (sess.plan_markdown or "").strip():
+                archive_current_plan(sess, "before_new_run")
+            sess.phase = SessionPhase.idle
+            sess.user_brief = ""
+            sess.plan_iteration_message = ""
+            sess.research_brief = ""
+            sess.research_sources = []
+            sess.agent_turns = []
+            sess.messages = []
+            sess.plan_markdown = ""
+            sess.pending_user_questions = []
+            sess.user_answered_clarification = False
+            sess.error_message = None
+            sess.synthesizer_ran = False
+            sess.last_synth_summary = ""
+            sess.discussion_round = 0
+            sess.last_consolidated_questions = []
 
     if sess.phase == SessionPhase.error:
         sess.phase = SessionPhase.idle
@@ -429,7 +457,15 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
 
     async def gen() -> Any:
         try:
-            async for ev in run_council_pipeline(settings, store, sess, content, c):
+            yield f"data: {json.dumps({'type': 'plan_snapshot', 'plan_markdown': sess.plan_markdown, 'plan_filename': sess.plan_filename, 'plan_versions': list(getattr(sess, 'plan_versions', None) or [])})}\n\n"
+            async for ev in run_council_pipeline(
+                settings,
+                store,
+                sess,
+                content,
+                c,
+                continue_from_plan=body.intent == "continue_plan",
+            ):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

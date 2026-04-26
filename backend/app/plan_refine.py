@@ -9,7 +9,13 @@ from .config import Settings
 from .llm import ChatMsg, _msg_system, _msg_user, complete_chat
 from .orchestrator import effective_orchestrator
 from .prompts.plan_refine import PLAN_REFINE_USER_SUFFIX
-from .session import ChatMessage, CouncilSession, SessionPhase, SessionStore
+from .session import (
+    ChatMessage,
+    CouncilSession,
+    SessionPhase,
+    SessionStore,
+    archive_current_plan,
+)
 
 
 _FENCE_RE = re.compile(
@@ -157,7 +163,9 @@ async def run_plan_refine(
             yield {"type": "error", "message": "Model returned empty plan text."}
             return
 
+        archive_current_plan(s, "before_refine")
         s.plan_markdown = new_md
+        s.plan_iteration_message = ""
         summary = (
             f"Plan refined ({', '.join(labels)}).\n\n"
             f"_Instruction:_ {(instruction or '').strip()[:400]}"
@@ -188,6 +196,7 @@ async def run_plan_refine(
             "type": "plan",
             "content": s.plan_markdown,
             "filename": s.plan_filename or "plan.md",
+            "plan_versions": list(getattr(s, "plan_versions", None) or []),
         }
         yield {"type": "done"}
     except Exception as e:  # noqa: BLE001

@@ -51,6 +51,7 @@ def session_to_dict(s: CouncilSession) -> dict[str, Any]:
         "phase": pval,
         "messages": [_msg_to_dict(m) for m in s.messages],
         "user_brief": s.user_brief,
+        "plan_iteration_message": getattr(s, "plan_iteration_message", "") or "",
         "research_brief": s.research_brief,
         "research_sources": s.research_sources,
         "discussion_round": s.discussion_round,
@@ -60,6 +61,7 @@ def session_to_dict(s: CouncilSession) -> dict[str, Any]:
         "last_consolidated_questions": s.last_consolidated_questions,
         "plan_markdown": s.plan_markdown,
         "plan_filename": s.plan_filename,
+        "plan_versions": list(getattr(s, "plan_versions", None) or []),
         "error_message": s.error_message,
         "user_answered_clarification": s.user_answered_clarification,
         "synthesizer_ran": getattr(s, "synthesizer_ran", False),
@@ -80,6 +82,24 @@ def session_from_dict(d: dict[str, Any]) -> CouncilSession:
     msgs = d.get("messages") or []
     if not isinstance(msgs, list):
         msgs = []
+    raw_pv = d.get("plan_versions") or []
+    if not isinstance(raw_pv, list):
+        raw_pv = []
+    plan_versions: list[dict[str, Any]] = []
+    for x in raw_pv:
+        if not isinstance(x, dict):
+            continue
+        md = str(x.get("markdown") or "")
+        if not md.strip():
+            continue
+        plan_versions.append(
+            {
+                "filename": str(x.get("filename") or "plan.md").strip() or "plan.md",
+                "markdown": md,
+                "created_ts": float(x.get("created_ts", 0) or 0) or time.time(),
+                "source": str(x.get("source") or "unknown"),
+            }
+        )
     return CouncilSession(
         id=str(d.get("id", "")),
         model=str(d.get("model", "")),
@@ -90,6 +110,7 @@ def session_from_dict(d: dict[str, Any]) -> CouncilSession:
         phase=phase,
         messages=[_msg_from_dict(x) for x in msgs if isinstance(x, dict)],
         user_brief=str(d.get("user_brief") or ""),
+        plan_iteration_message=str(d.get("plan_iteration_message") or ""),
         research_brief=str(d.get("research_brief") or ""),
         research_sources=list(d.get("research_sources") or []),
         discussion_round=int(d.get("discussion_round", 0) or 0),
@@ -99,6 +120,7 @@ def session_from_dict(d: dict[str, Any]) -> CouncilSession:
         last_consolidated_questions=list(d.get("last_consolidated_questions") or []),
         plan_markdown=str(d.get("plan_markdown") or ""),
         plan_filename=str(d.get("plan_filename") or "plan.md"),
+        plan_versions=plan_versions,
         error_message=d.get("error_message"),
         user_answered_clarification=bool(d.get("user_answered_clarification", False)),
         synthesizer_ran=bool(d.get("synthesizer_ran", False)),

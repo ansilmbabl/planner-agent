@@ -25,6 +25,13 @@ export type ModelsResponse = {
   ollama?: OllamaProbe | { reachable: boolean; model_count: number; base_url?: string }
 }
 
+export type PlanVersion = {
+  filename: string
+  markdown: string
+  created_ts: number
+  source: string
+}
+
 export type SessionMessage = {
   role: string
   content: string
@@ -59,6 +66,8 @@ export type SessionResponse = {
   pending_user_questions?: string[]
   plan_markdown?: string
   plan_filename?: string
+  plan_versions?: PlanVersion[]
+  plan_iteration_message?: string
   error_message?: string | null
   messages?: SessionMessage[]
 }
@@ -91,7 +100,18 @@ export type SseEvent =
     }
   | { type: 'synth'; summary: string }
   | { type: 'orchestrator_reply'; content: string }
-  | { type: 'plan'; content: string; filename: string }
+  | {
+      type: 'plan_snapshot'
+      plan_markdown?: string
+      plan_filename?: string
+      plan_versions?: PlanVersion[]
+    }
+  | {
+      type: 'plan'
+      content: string
+      filename: string
+      plan_versions?: PlanVersion[]
+    }
   | { type: 'error'; message: string }
   | { type: 'done' }
   | { type: 'stream_end' }
@@ -314,12 +334,17 @@ export async function* streamUserMessage(
   sessionId: string,
   content: string,
   model: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts?: { intent?: 'new_run' | 'continue_plan' }
 ): AsyncGenerator<SseEvent, void, unknown> {
   const r = await fetch(`${API}/sessions/${sessionId}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, model }),
+    body: JSON.stringify({
+      content,
+      model,
+      intent: opts?.intent ?? 'new_run',
+    }),
     signal,
   })
   if (!r.ok) {
