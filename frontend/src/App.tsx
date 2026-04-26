@@ -24,8 +24,11 @@ import {
 import { MessageMarkdown } from './components/MessageMarkdown'
 import { SettingsPanel } from './components/SettingsPanel'
 
+type FeedLane = 'chat' | 'process'
+
 type FeedItem = {
   id: string
+  lane: FeedLane
   kind: 'phase' | 'research' | 'agent' | 'synth' | 'await' | 'err' | 'text'
   title: string
   body?: string
@@ -35,15 +38,26 @@ function simpleId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
-function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem['kind'] } {
+function eventLabel(ev: SseEvent): {
+  title: string
+  body: string
+  kind: FeedItem['kind']
+  lane: FeedLane
+} {
   if (!ev || typeof ev !== 'object' || !('type' in ev)) {
-    return { title: 'Event', body: JSON.stringify(ev), kind: 'text' }
+    return {
+      title: 'Event',
+      body: JSON.stringify(ev),
+      kind: 'text',
+      lane: 'process',
+    }
   }
   const t = (ev as { type: string }).type
   if (t === 'phase') {
     const e = ev as { phase: string; message?: string; round?: number }
     return {
       kind: 'phase',
+      lane: 'process',
       title: e.message || e.phase || 'Phase',
       body:
         e.round != null
@@ -53,7 +67,17 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
   }
   if (t === 'research') {
     const e = ev as { brief: string }
-    return { kind: 'research', title: 'Research', body: e.brief }
+    const brief = (e.brief || '').trim()
+    const oneLine =
+      brief.length > 140 ? `${brief.slice(0, 137).trim()}…` : brief
+    return {
+      kind: 'research',
+      lane: 'process',
+      title: 'Web research',
+      body: oneLine
+        ? `${oneLine}\n\n_Full summary and sources are in the **Research** tab._`
+        : 'Brief updated — see **Research** tab.',
+    }
   }
   if (t === 'agent') {
     const e = ev as {
@@ -66,13 +90,19 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     let body = e.reaction
     if (e.planner_note) body += `\n\nNotes for plan:\n${e.planner_note}`
     if (e.user_question) body += `\n\nQuestion: ${e.user_question}`
-    return { kind: 'agent', title: `Round ${e.round} · ${e.name}`, body }
+    return {
+      kind: 'agent',
+      lane: 'process',
+      title: `Specialist · round ${e.round} · ${e.name}`,
+      body,
+    }
   }
   if (t === 'awaiting_user') {
     const e = ev as { questions: string[] }
     return {
       kind: 'await',
-      title: 'Your input',
+      lane: 'chat',
+      title: 'Reply needed',
       body: e.questions.map((q) => `- ${q}`).join('\n'),
     }
   }
@@ -93,62 +123,152 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     const bits = [e.reason, ids ? `→ ${ids}` : ''].filter(Boolean).join(' ')
     return {
       kind: 'phase',
+      lane: 'process',
       title:
         e.step != null
-          ? `Orchestrator (step ${e.step}) · ${e.action}`
-          : `Orchestrator · ${e.action}`,
+          ? `Routing · step ${e.step} · ${e.action}`
+          : `Routing · ${e.action}`,
       body: bits,
     }
   }
   if (t === 'synth') {
     const e = ev as { summary: string }
-    return { kind: 'synth', title: 'Synthesizer', body: e.summary }
+    return {
+      kind: 'synth',
+      lane: 'process',
+      title: 'Synthesizer',
+      body: e.summary,
+    }
   }
   if (t === 'orchestrator_reply') {
     const e = ev as { content: string }
     return {
       kind: 'text',
+      lane: 'chat',
       title: 'Orchestrator',
       body: e.content,
     }
   }
   if (t === 'error') {
     const e = ev as { message: string }
-    return { kind: 'err', title: 'Error', body: e.message }
+    return { kind: 'err', lane: 'chat', title: 'Error', body: e.message }
   }
   if (t === 'plan') {
     return {
       kind: 'text',
+      lane: 'chat',
       title: 'Plan ready',
-      body: 'See the document panel (right) to preview and download.',
+      body: 'Open the **Plan** tab on the right to preview and download.',
     }
   }
   if (t === 'stream_end') {
-    return { kind: 'phase', title: '', body: '' }
+    return { kind: 'phase', lane: 'process', title: '', body: '' }
   }
   if (t === 'done') {
     return {
       kind: 'phase',
-      title: 'Complete',
-      body: 'You can add another message, or start a new chat in the sidebar.',
+      lane: 'process',
+      title: 'Run finished',
+      body: 'You can send another message or start a new chat.',
     }
   }
-  return { kind: 'text', title: t, body: JSON.stringify(ev) }
+  return {
+    kind: 'text',
+    lane: 'process',
+    title: t,
+    body: JSON.stringify(ev),
+  }
+}
+
+function truncateProcessBody(s: string, max = 200): string {
+  const t = (s || '').trim()
+  if (!t) return ''
+  if (t.length <= max) return t
+  return `${t.slice(0, max - 1).trim()}…`
 }
 
 function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
   if (!msgs?.length) return []
-  return msgs.map((m, i) => ({
-    id: `hist-${i}-${(m.content || '').slice(0, 6)}`,
-    kind: 'text' as const,
-    title:
-      m.role === 'user'
-        ? 'You'
-        : (m.agent_name as string) ||
-          (m.agent_id as string) ||
-          (m.role === 'assistant' ? 'Assistant' : m.role),
-    body: m.content,
-  }))
+  return msgs.map((m, i) => {
+    const id = `hist-${i}-${(m.content || '').slice(0, 6)}`
+    if (m.role === 'user') {
+      return {
+        id,
+        lane: 'chat' as const,
+        kind: 'text' as const,
+        title: 'You',
+        body: m.content,
+      }
+    }
+    if (m.role !== 'assistant') {
+      return {
+        id,
+        lane: 'chat' as const,
+        kind: 'text' as const,
+        title: m.role,
+        body: m.content,
+      }
+    }
+    const aid = String(m.agent_id || '').toLowerCase()
+    const an = String(m.agent_name || '').trim()
+    const action =
+      m.meta && typeof m.meta.action === 'string' ? m.meta.action : ''
+
+    if (aid === 'system' && (an === 'Research' || an.toLowerCase() === 'research')) {
+      return {
+        id,
+        lane: 'process',
+        kind: 'research',
+        title: 'Research',
+        body: truncateProcessBody(m.content, 220)
+          ? `${truncateProcessBody(m.content, 220)}\n\n_Full text in **Research** tab._`
+          : 'Brief updated — see **Research** tab.',
+      }
+    }
+    if (aid === 'planner' || /planner/i.test(an)) {
+      return {
+        id,
+        lane: 'chat',
+        kind: 'text',
+        title: an || 'Planner',
+        body: m.content,
+      }
+    }
+    if (action === 'ask_user') {
+      return {
+        id,
+        lane: 'chat',
+        kind: 'await',
+        title: 'Reply needed',
+        body: m.content,
+      }
+    }
+    if (action === 'orchestrator_reply' || aid === 'orchestrator') {
+      return {
+        id,
+        lane: 'chat',
+        kind: 'text',
+        title: an || 'Orchestrator',
+        body: m.content,
+      }
+    }
+    if (/synth/i.test(an) || /synth/i.test(aid) || /align/i.test(an)) {
+      return {
+        id,
+        lane: 'process',
+        kind: 'synth',
+        title: an || 'Synthesizer',
+        body: m.content,
+      }
+    }
+    return {
+      id,
+      lane: 'process',
+      kind: 'agent',
+      title: an || aid || 'Specialist',
+      body: m.content,
+    }
+  })
 }
 
 function formatSessionTime(ts: number) {
@@ -178,20 +298,22 @@ function feedItemShell(
   isErr: boolean
 ) {
   if (isUser) {
-    return 'ml-auto max-w-[min(100%,36rem)] bg-violet-500/10 border border-violet-500/20 shadow-sm shadow-violet-950/25'
+    return 'ml-auto max-w-[min(90%,30rem)] rounded-[1.35rem] rounded-br-md bg-gradient-to-br from-violet-600/35 to-violet-700/20 border border-violet-400/20 shadow-md shadow-black/25'
   }
   if (isErr) {
-    return 'bg-rose-500/[0.06] border border-rose-500/25'
+    return 'max-w-[min(90%,32rem)] rounded-2xl bg-rose-500/[0.07] border border-rose-400/20'
   }
-  const base = 'max-w-3xl border bg-slate-800/35 shadow-sm'
+  const base =
+    'max-w-[min(90%,32rem)] rounded-[1.35rem] rounded-bl-md border shadow-sm bg-slate-900/40'
   const accent: Record<FeedItem['kind'], string> = {
-    phase: 'border-indigo-500/25 border-l-4 border-l-indigo-400/80 bg-indigo-950/25',
-    research: 'border-cyan-500/20 border-l-4 border-l-cyan-500/60 bg-cyan-950/20',
-    agent: 'border-slate-600/40 border-l-4 border-l-violet-500/65 bg-slate-800/50',
-    synth: 'border-emerald-500/25 border-l-4 border-l-emerald-500/55 bg-emerald-950/20',
-    await: 'border-amber-500/30 border-l-4 border-l-amber-400/80 bg-amber-950/25',
+    phase: 'border-white/[0.08]',
+    research: 'border-cyan-500/15 bg-cyan-950/15',
+    agent: 'border-violet-500/15 bg-violet-950/10',
+    synth: 'border-emerald-500/15 bg-emerald-950/10',
+    await:
+      'border-amber-400/25 bg-amber-950/20 ring-1 ring-amber-500/10',
     err: 'border-rose-500/25',
-    text: 'border-slate-600/40 border-l-4 border-l-slate-500/50',
+    text: 'border-white/[0.08]',
   }
   return `${base} ${accent[kind]}`
 }
@@ -201,18 +323,33 @@ function feedTitleClass(
   isUser: boolean,
   isErr: boolean
 ) {
-  if (isUser) return 'text-violet-200'
-  if (isErr) return 'text-rose-300/95'
+  if (isUser) return 'text-violet-100/95 text-xs font-medium'
+  if (isErr) return 'text-rose-200/95 text-xs font-semibold'
   const map: Record<FeedItem['kind'], string> = {
-    phase: 'text-indigo-200/95',
-    research: 'text-cyan-200/95',
-    agent: 'text-violet-200/95',
-    synth: 'text-emerald-200/95',
-    await: 'text-amber-200/95',
+    phase: 'text-slate-400 text-xs font-medium',
+    research: 'text-cyan-200/90 text-xs font-medium',
+    agent: 'text-violet-200/90 text-xs font-medium',
+    synth: 'text-emerald-200/90 text-xs font-medium',
+    await: 'text-amber-100/95 text-xs font-semibold',
     err: 'text-rose-300/95',
-    text: 'text-slate-300/95',
+    text: 'text-slate-200 text-xs font-medium',
   }
   return map[kind]
+}
+
+function processDotClass(kind: FeedItem['kind']): string {
+  switch (kind) {
+    case 'phase':
+      return 'bg-indigo-400 shadow-[0_0_6px_rgba(129,140,248,0.45)]'
+    case 'research':
+      return 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.35)]'
+    case 'agent':
+      return 'bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.4)]'
+    case 'synth':
+      return 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.35)]'
+    default:
+      return 'bg-slate-500'
+  }
 }
 
 export default function App() {
@@ -243,6 +380,8 @@ export default function App() {
     brief: string
     sources: { title: string; href: string }[]
   } | null>(null)
+  /** Routing / research / specialists — separate from chat bubbles */
+  const [showProcessDetail, setShowProcessDetail] = useState(false)
 
   const streamAbort = useRef<AbortController | null>(null)
   /** Session id for the in-flight /api/.../message stream (if any). */
@@ -506,6 +645,7 @@ export default function App() {
         ...f,
         {
           id: simpleId(),
+          lane: mapped.lane,
           kind: mapped.kind,
           title: mapped.title,
           body: mapped.body,
@@ -530,7 +670,13 @@ export default function App() {
       streamOwnerSessionIdRef.current = sid
       setFeed((f) => [
         ...f,
-        { id: simpleId(), kind: 'text', title: 'You', body: text },
+        {
+          id: simpleId(),
+          lane: 'chat',
+          kind: 'text',
+          title: 'You',
+          body: text,
+        },
       ])
       for await (const ev of streamUserMessage(sid, text, model, ac.signal)) {
         if ((ev as { type?: string }).type === 'error') {
@@ -539,6 +685,7 @@ export default function App() {
               ...f,
               {
                 id: simpleId(),
+                lane: 'chat',
                 kind: 'err',
                 title: 'Error',
                 body: (ev as { message: string }).message,
@@ -554,7 +701,13 @@ export default function App() {
         if (applyStreamToUi()) {
           setFeed((f) => [
             ...f,
-            { id: simpleId(), kind: 'err', title: 'Stopped', body: 'Cancelled.' },
+            {
+              id: simpleId(),
+              lane: 'chat',
+              kind: 'err',
+              title: 'Stopped',
+              body: 'Cancelled.',
+            },
           ])
         }
       } else {
@@ -563,6 +716,7 @@ export default function App() {
             ...f,
             {
               id: simpleId(),
+              lane: 'chat',
               kind: 'err',
               title: 'Error',
               body: e instanceof Error ? e.message : String(e),
@@ -593,8 +747,13 @@ export default function App() {
   const ollamaOk = oll?.reachable && (oll.model_count ?? 0) > 0
   const ollamaHostReachable = oll?.reachable === true && oll.model_count === 0
 
+  const processStepCount = useMemo(
+    () => feed.filter((x) => x.lane === 'process').length,
+    [feed]
+  )
+
   return (
-    <div className="h-dvh flex flex-col sm:flex-row bg-[#090a0d] text-slate-100 overflow-hidden selection:bg-violet-500/30">
+    <div className="h-dvh flex flex-col sm:flex-row text-slate-100 overflow-hidden selection:bg-violet-500/25">
       {/* Mobile: dim + close when tapping outside */}
       {sidebarOpen && (
         <button
@@ -609,48 +768,37 @@ export default function App() {
       <aside
         id="session-sidebar"
         className={`
-        fixed z-40 inset-y-0 left-0 flex flex-col w-[min(100%,20rem)] border-r border-white/[0.06]
-        bg-[#0c0e14] shadow-2xl shadow-black/50
+        fixed z-40 inset-y-0 left-0 flex flex-col w-[min(100%,19rem)] border-r border-white/[0.07]
+        bg-[#0e1017]/92 backdrop-blur-xl shadow-2xl shadow-black/40
         transition-transform duration-200 ease-out motion-reduce:transition-none
-        sm:static sm:z-0 sm:w-[19rem] sm:max-h-none sm:shadow-none sm:translate-x-0
+        sm:static sm:z-0 sm:w-[17.5rem] sm:max-h-none sm:shadow-none sm:translate-x-0
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'}
       `}
         aria-label="Chat history"
       >
-        <div className="p-3.5 border-b border-white/[0.06] flex items-start gap-3">
-          <div
-            className="shrink-0 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500/90 to-indigo-700/90 text-white shadow-md shadow-violet-950/40"
-            aria-hidden
-          >
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.5}
+        <div className="p-4 border-b border-white/[0.06]">
+          <div className="flex items-center gap-3">
+            <div
+              className="shrink-0 flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-lg shadow-violet-900/30"
+              aria-hidden
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"
-              />
-            </svg>
-          </div>
-          <div className="flex-1 min-w-0 pt-0.5">
-            <h1 className="text-[15px] font-semibold text-white tracking-tight leading-tight">
-              Planner Council
-            </h1>
-            <p className="text-xs text-slate-500 leading-snug mt-0.5">
-              Orchestrator routes → optional research →{' '}
-              <span className="text-violet-300/95">plan.md</span>
-            </p>
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold text-white tracking-tight">Planner</h1>
+              <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                Chats &amp; councils
+              </p>
+            </div>
           </div>
         </div>
-        <div className="p-2.5">
+        <div className="px-3 pt-3 pb-2">
           <button
             type="button"
             onClick={() => void newChat()}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.99] text-white text-sm font-medium py-2.5 px-3 shadow-lg shadow-violet-900/30 transition motion-reduce:transform-none"
+            className="w-full flex items-center justify-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium py-2.5 px-3 shadow-md shadow-violet-950/25 transition active:scale-[0.99] motion-reduce:transform-none"
           >
             <svg
               className="h-4 w-4 opacity-90"
@@ -665,7 +813,7 @@ export default function App() {
             New chat
           </button>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3 space-y-0.5">
+        <div className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-3 space-y-1">
           {sessionsLoading && (
             <div className="px-2 py-2 space-y-2" aria-hidden>
               {[1, 2, 3].map((i) => (
@@ -698,13 +846,13 @@ export default function App() {
                 onClick={() => void openSession(s.id)}
                 onKeyDown={(e) => e.key === 'Enter' && void openSession(s.id)}
                 className={`
-                  group w-full text-left rounded-xl px-2.5 py-2.5 pr-1 flex gap-1 items-start
-                  transition-[background,border,box-shadow] duration-150
-                  focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/45 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0c0e14]
+                  group w-full text-left rounded-xl px-3 py-2.5 pr-1 flex gap-2 items-start
+                  transition-[background,border] duration-150
+                  focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0e1017]
                   ${
                     active
-                      ? 'bg-violet-500/[0.12] border border-violet-500/35 shadow-sm shadow-violet-950/20'
-                      : 'hover:bg-white/[0.04] border border-transparent hover:border-white/[0.06]'
+                      ? 'bg-white/[0.06] border border-violet-500/30'
+                      : 'hover:bg-white/[0.04] border border-transparent'
                   }
                 `}
               >
@@ -763,7 +911,7 @@ export default function App() {
             )
           })}
         </div>
-        <div className="shrink-0 border-t border-white/[0.06] p-2.5">
+        <div className="shrink-0 border-t border-white/[0.06] p-3">
           <button
             type="button"
             onClick={() => {
@@ -771,33 +919,25 @@ export default function App() {
               setSidebarOpen(false)
             }}
             className={`
-              w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors
+              w-full rounded-xl px-3 py-2.5 text-left text-sm transition-colors
               ${
                 mainView === 'settings'
-                  ? 'bg-violet-500/18 text-violet-100 border border-violet-500/35'
-                  : 'text-slate-300 hover:bg-white/[0.05] border border-transparent hover:border-white/[0.06]'
+                  ? 'bg-violet-500/15 text-violet-100 ring-1 ring-violet-500/35'
+                  : 'text-slate-400 hover:bg-white/[0.05] hover:text-slate-200'
               }
             `}
           >
-            <span className="flex items-center gap-2">
-              <svg
-                className="h-4 w-4 text-slate-500 shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-                aria-hidden
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.6.9.55.45 1.162.86 1.82 1.22.32.19.55.5.6.9l.213 1.28c.09.54-.2 1.05-.67 1.3l-1.4.8c-.4.24-.6.7-.5 1.16.15.6.25 1.22.3 1.86.04.4.3.75.7.88l1.4.4c.5.15.9.57 1.05 1.1l.6 1.8c.15.5-.1 1.05-.55 1.3L18.1 20.1c-.45.3-1.02.2-1.4-.2l-1.15-1.1c-.32-.3-.8-.4-1.2-.2-.5.2-1.02.4-1.55.5-.4.1-.7.4-.8.8l-.3 1.2c-.1.5-.5.9-1 .95l-1.7.1c-.55.05-1.05-.3-1.2-.8l-.3-1.1c-.1-.45-.5-.8-1-.9-.2-.02-.4-.04-.6-.1-.1-.02-.2-.04-.3-.1l-1.2.5c-.5.2-1.1.05-1.4-.4l-1-1.4c-.3-.4-.25-1.05.1-1.4l.9-1.05c.25-.3.3-.7.1-1.1-.1-.2-.2-.4-.3-.6-.15-.4-.2-.8-.1-1.2l.3-1.2c.1-.4-.05-.85-.4-1.1l-1.2-.9c-.45-.35-.6-.95-.35-1.45l.6-1.8c.15-.5.6-.9 1.1-1.05l1.4-.4c.4-.1.7-.5.7-.9.05-.55.1-1.1.2-1.64.1-.4-.05-.85-.4-1.1L9.2 4.2c-.45-.3-.6-.9-.4-1.4L9.2 1.1c.1-.5.5-.9 1-.95H9.4zM12 15a3 3 0 100-6 3 3 0 000 6z"
-                />
-              </svg>
-              Settings
-            </span>
-            <span className="block text-[11px] font-normal text-slate-500 mt-0.5 pl-6">
-              Ollama and council agents
+            <span className="flex items-center gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.06] text-slate-400">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </span>
+              <span>
+                <span className="font-medium text-slate-200">Settings</span>
+                <span className="block text-[11px] text-slate-500 mt-0.5">Model &amp; agents</span>
+              </span>
             </span>
           </button>
         </div>
@@ -808,10 +948,10 @@ export default function App() {
         aria-busy={busy && mainView === 'council'}
       >
         {mainView === 'council' && (
-          <header className="shrink-0 border-b border-white/[0.06] bg-[#090a0d]/85 backdrop-blur-md px-3 py-2.5 sm:px-4 flex flex-wrap items-center gap-2.5 z-10">
+          <header className="shrink-0 border-b border-white/[0.06] bg-[#0a0b10]/80 backdrop-blur-md px-3 py-3 sm:px-5 flex flex-wrap items-center gap-3 z-10">
             <button
               type="button"
-              className="sm:hidden rounded-lg border border-slate-600/50 bg-slate-900/50 px-2.5 py-2 text-xs font-medium text-slate-200 touch-manipulation"
+              className="sm:hidden rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-slate-200 touch-manipulation"
               onClick={() => setSidebarOpen((o) => !o)}
               aria-expanded={sidebarOpen}
               aria-controls="session-sidebar"
@@ -820,11 +960,11 @@ export default function App() {
               {sidebarOpen ? 'Close' : 'Chats'}
             </button>
             <div className="min-w-0 flex-1 sm:flex-initial sm:min-w-0">
-              <div className="text-sm font-semibold text-slate-100 tracking-tight">
-                Council workspace
+              <div className="text-sm font-semibold text-white tracking-tight">
+                Workspace
               </div>
               <p className="text-[11px] text-slate-500 leading-snug hidden sm:block mt-0.5">
-                Chat, research, and <span className="text-violet-300/90">plan output</span>
+                Message the council · outputs on the right
               </p>
             </div>
             <div
@@ -957,7 +1097,7 @@ export default function App() {
                 setMainView('settings')
                 setSidebarOpen(false)
               }}
-              className="text-xs font-medium rounded-lg border border-slate-600/50 bg-slate-900/40 px-3 py-1.5 text-slate-200 hover:bg-white/[0.06] shrink-0"
+              className="hidden sm:inline-flex text-xs font-medium rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-slate-300 hover:bg-white/[0.07] shrink-0"
             >
               Settings
             </button>
@@ -1010,64 +1150,83 @@ export default function App() {
             />
           </div>
         ) : (
-        <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden gap-0 lg:gap-0 lg:p-4 lg:pt-3">
           {/* Messages */}
-          <div className="flex-1 flex flex-col min-w-0 min-h-0 border-b lg:border-b-0 lg:border-r border-white/5">
-            <div className="shrink-0 flex items-center justify-between gap-2 px-3 sm:px-4 py-2.5 border-b border-white/[0.06] bg-[#08090c]/50">
-              <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
-                  Conversation
-                </div>
-                {sessionId && (
-                  <div className="mt-1 text-sm text-slate-100 font-medium line-clamp-1 pr-1">
-                    {currentSessionTitle || 'New session'}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 lg:rounded-2xl lg:border lg:border-white/[0.08] lg:bg-[#0c0e14]/50 lg:shadow-xl lg:shadow-black/20 overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 border-b border-white/[0.06] bg-[#0a0b10]/40">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-200">Conversation</div>
+                {sessionId ? (
+                  <div
+                    className="text-[11px] text-slate-500 mt-0.5 truncate"
+                    title={`${currentSessionTitle || 'Session'} · ${sessionId}`}
+                  >
+                    {currentSessionTitle || 'Untitled'}
+                    {phase ? (
+                      <span className="text-slate-600"> · {phase}</span>
+                    ) : null}
                   </div>
+                ) : (
+                  <div className="text-[11px] text-slate-500 mt-0.5">Pick or start a chat</div>
                 )}
               </div>
-              {sessionId && (
-                <div className="flex flex-col items-end gap-0.5 shrink-0 min-w-0">
-                  {phase && (
-                    <span
-                      className="text-[10px] font-medium text-violet-300/95 max-w-[9rem] sm:max-w-[12rem] truncate text-right"
-                      title={phase}
-                    >
-                      {phase}
-                    </span>
-                  )}
-                  <span
-                    className="text-slate-600 font-mono text-[10px] truncate max-w-[4.5rem] sm:max-w-[9rem] hidden sm:block"
-                    title={sessionId}
+              {processStepCount > 0 ? (
+                <div
+                  className="shrink-0 inline-flex rounded-lg border border-white/[0.08] bg-black/20 p-0.5"
+                  role="group"
+                  aria-label="What to show in the thread"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setShowProcessDetail(false)}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                      !showProcessDetail
+                        ? 'bg-white/10 text-white shadow-sm'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
                   >
-                    {sessionId}
-                  </span>
+                    Focus
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowProcessDetail(true)}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                      showProcessDetail
+                        ? 'bg-white/10 text-white shadow-sm'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                    title="Show routing, research, and specialist steps"
+                  >
+                    All · {processStepCount}
+                  </button>
                 </div>
-              )}
+              ) : null}
             </div>
             <div
               ref={scrollRef}
-              className="flex-1 min-h-0 overflow-y-auto scroll-smooth scroll-pb-4 px-3 sm:px-4 py-4 space-y-3.5 [scrollbar-gutter:stable]"
+              className="flex-1 min-h-0 overflow-y-auto scroll-smooth scroll-pb-6 px-4 sm:px-5 py-5 space-y-4 [scrollbar-gutter:stable]"
             >
               {feed.length === 0 && !sessionId && (
-                <div className="rounded-2xl border border-slate-600/30 bg-gradient-to-b from-slate-900/50 to-slate-950/40 p-6 sm:p-8 text-left max-w-md mx-auto shadow-lg shadow-black/20">
-                  <p className="text-slate-100 text-base font-semibold tracking-tight">
-                    Start a council run
+                <div className="rounded-2xl border border-white/[0.08] bg-gradient-to-b from-white/[0.04] to-transparent p-8 sm:p-10 text-center max-w-lg mx-auto">
+                  <p className="text-lg font-semibold text-white tracking-tight">
+                    Welcome
                   </p>
-                  <p className="text-slate-500 text-sm mt-2 leading-relaxed">
-                    The orchestrator chooses each step (reply, research, specialists), then may write a plan.
+                  <p className="text-slate-400 text-sm mt-3 leading-relaxed max-w-sm mx-auto">
+                    Start a chat, choose a model above, and describe what you need. Your thread stays
+                    clean — turn <span className="text-slate-300">All</span> on to see routing and
+                    research steps.
                   </p>
-                  <ol className="text-slate-400 text-sm mt-4 space-y-2.5 list-decimal list-inside leading-relaxed">
-                    <li>
-                      Click <span className="text-slate-200 font-medium">New chat</span> in the sidebar
-                    </li>
-                    <li>
-                      Pick a <span className="text-slate-200 font-medium">text</span> model in the header
-                    </li>
-                    <li>Describe what you want — updates stream into this thread</li>
-                  </ol>
-                  <p className="text-slate-500 text-xs mt-5 pt-4 border-t border-white/[0.06]">
-                    History is stored in the API&apos;s <code className="text-slate-400">SQLite</code>{' '}
-                    database.
-                  </p>
+                  <div className="mt-6 flex flex-col sm:flex-row gap-2 justify-center text-sm text-slate-500">
+                    <span className="rounded-lg bg-white/[0.04] px-3 py-2 border border-white/[0.06]">
+                      1. New chat
+                    </span>
+                    <span className="rounded-lg bg-white/[0.04] px-3 py-2 border border-white/[0.06]">
+                      2. Model + council
+                    </span>
+                    <span className="rounded-lg bg-white/[0.04] px-3 py-2 border border-white/[0.06]">
+                      3. Send message
+                    </span>
+                  </div>
                 </div>
               )}
               {feed.length === 0 && sessionId && (
@@ -1076,15 +1235,47 @@ export default function App() {
                 </p>
               )}
               {feed.map((f) => {
+                if (f.lane === 'process' && !showProcessDetail) {
+                  return null
+                }
+                if (f.lane === 'process') {
+                  return (
+                    <article
+                      key={f.id}
+                      className="flex gap-3 max-w-2xl mr-auto pl-1"
+                      aria-label="Background step"
+                    >
+                      <span
+                        className={`mt-1.5 size-2 shrink-0 rounded-full ${processDotClass(f.kind)}`}
+                        aria-hidden
+                      />
+                      <div className="min-w-0 flex-1 rounded-xl border border-white/[0.06] bg-black/25 px-3 py-2">
+                        <div className="flex items-baseline gap-2 flex-wrap">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            Activity
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-medium leading-snug">
+                            {f.title}
+                          </span>
+                        </div>
+                        {f.body && (
+                          <div className="mt-1.5 text-[12px] leading-relaxed text-slate-500 [&_strong]:text-slate-400 [&_a]:text-cyan-400/90 [&_a]:underline-offset-2">
+                            <MessageMarkdown text={f.body} size="message" />
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  )
+                }
                 const isUser = f.title === 'You'
                 const isErr = f.kind === 'err'
                 return (
                   <article
                     key={f.id}
-                    className={`max-w-2xl rounded-2xl px-3.5 py-3 ${feedItemShell(f.kind, isUser, isErr)}`}
+                    className={`${isUser ? '' : 'mr-auto'} px-4 py-3 ${feedItemShell(f.kind, isUser, isErr)}`}
                   >
                     <div
-                      className={`text-[11px] font-semibold tracking-tight ${feedTitleClass(
+                      className={`mb-1.5 ${feedTitleClass(
                         f.kind,
                         isUser,
                         isErr
@@ -1094,11 +1285,11 @@ export default function App() {
                     </div>
                     {f.body && (
                       <div
-                        className={
+                        className={`text-[15px] leading-relaxed text-slate-100/95 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 ${
                           isUser
-                            ? '[&_a]:text-violet-300 [&_a]:decoration-violet-400/40'
-                            : undefined
-                        }
+                            ? '[&_a]:text-violet-200 [&_a]:decoration-violet-300/50'
+                            : '[&_a]:text-violet-400/95'
+                        }`}
                       >
                         <MessageMarkdown
                           text={f.body}
@@ -1110,36 +1301,48 @@ export default function App() {
                   </article>
                 )
               })}
+              {!showProcessDetail && processStepCount > 0 && (
+                <p className="text-center text-[11px] text-slate-500 py-2 rounded-xl bg-white/[0.02] border border-dashed border-white/[0.06]">
+                  {processStepCount} step{processStepCount === 1 ? '' : 's'} in the background ·{' '}
+                  <button
+                    type="button"
+                    className="text-violet-400 font-medium hover:text-violet-300"
+                    onClick={() => setShowProcessDetail(true)}
+                  >
+                    Show activity
+                  </button>
+                </p>
+              )}
               {busy && (
                 <div
-                  className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3.5 py-2.5 text-sm text-violet-100/95 flex items-center gap-2.5"
+                  className="mr-auto max-w-sm rounded-2xl border border-violet-500/20 bg-violet-500/[0.08] px-4 py-3 text-sm text-violet-100/95 flex items-center gap-3"
                   role="status"
                   aria-live="polite"
                 >
-                  <span className="flex gap-0.5" aria-hidden>
-                    <span className="size-1.5 rounded-full bg-violet-300 animate-bounce [animation-delay:-0.2s]" />
-                    <span className="size-1.5 rounded-full bg-violet-300 animate-bounce" />
-                    <span className="size-1.5 rounded-full bg-violet-300 animate-bounce [animation-delay:0.2s]" />
+                  <span className="flex gap-1" aria-hidden>
+                    <span className="size-2 rounded-full bg-violet-400 animate-bounce [animation-delay:-0.2s]" />
+                    <span className="size-2 rounded-full bg-violet-400 animate-bounce" />
+                    <span className="size-2 rounded-full bg-violet-400 animate-bounce [animation-delay:0.2s]" />
                   </span>
-                  Council is working…
+                  <span>Working on your request…</span>
                 </div>
               )}
             </div>
 
-            <div className="shrink-0 p-3 sm:p-4 border-t border-white/[0.06] bg-[#07080b]/90 backdrop-blur-sm">
-              <div className="max-w-3xl mx-auto flex flex-col sm:flex-row gap-2.5 sm:items-end sm:gap-3">
+            <div className="shrink-0 p-4 border-t border-white/[0.06] bg-[#08090c]/60 backdrop-blur-sm">
+              <div className="max-w-3xl mx-auto flex gap-3 items-end">
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
                   <textarea
                     ref={composerRef}
-                    className={`w-full min-h-[48px] max-h-36 rounded-xl border bg-slate-950/70 px-3.5 py-3 text-sm text-slate-100 placeholder:text-slate-500 shadow-inner shadow-black/20 focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-violet-500/40 disabled:opacity-50 resize-y ${
+                    className={`w-full min-h-[52px] max-h-40 rounded-2xl border bg-[#12141c] px-4 py-3 text-[15px] text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/35 focus:border-violet-500/30 disabled:opacity-50 resize-y ${
                       awaiting
-                        ? 'border-amber-500/50 ring-1 ring-amber-500/15'
-                        : 'border-slate-600/60'
+                        ? 'border-amber-500/40 ring-1 ring-amber-500/10'
+                        : 'border-white/[0.08]'
                     }`}
                     placeholder={
                       awaiting
-                        ? 'Reply to the council (they asked a question)…'
-                        : 'Describe your goal or answer the council…'
+                        ? 'Answer the council’s question…'
+                        : 'Message the council…'
                     }
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -1153,49 +1356,56 @@ export default function App() {
                     rows={2}
                     aria-label="Message"
                   />
-                  <p className="text-[11px] text-slate-500 px-0.5 leading-relaxed">
-                    Markdown supported. <kbd className="kbd-hint">Enter</kbd> send ·{' '}
-                    <kbd className="kbd-hint">Shift+Enter</kbd> newline
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 px-1">
+                    <span>
+                      <kbd className="kbd-hint">Enter</kbd> send ·{' '}
+                      <kbd className="kbd-hint">Shift+Enter</kbd> line
+                    </span>
                     {busy && (
-                      <span className="text-amber-200/80">
-                        {' '}
-                        · run in progress — use Stop to cancel
-                      </span>
+                      <button
+                        type="button"
+                        onClick={stopStream}
+                        className="text-amber-200/90 hover:text-amber-100 font-medium"
+                      >
+                        Stop run
+                      </button>
                     )}
-                  </p>
+                  </div>
                 </div>
-                <div className="flex sm:flex-col gap-2 sm:gap-1.5 shrink-0 w-full sm:w-auto">
-                  <button
-                    type="button"
-                    onClick={() => void onSend()}
-                    disabled={busy || !input.trim() || !model}
-                    title="Send (Enter)"
-                    className="flex-1 sm:flex-initial rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.99] disabled:opacity-35 disabled:hover:bg-violet-600 px-4 py-2.5 sm:px-5 text-sm font-medium text-white shadow-md shadow-violet-950/30 motion-reduce:transform-none"
-                  >
-                    Send
-                  </button>
-                  {busy && (
-                    <button
-                      type="button"
-                      onClick={stopStream}
-                      className="text-sm text-slate-400 hover:text-white py-2 sm:py-0 underline-offset-2 hover:underline"
-                    >
-                      Stop
-                    </button>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => void onSend()}
+                  disabled={busy || !input.trim() || !model}
+                  title="Send"
+                  className="shrink-0 h-12 w-12 sm:h-[3.25rem] sm:w-[3.25rem] rounded-2xl bg-violet-600 hover:bg-violet-500 disabled:opacity-35 disabled:hover:bg-violet-600 flex items-center justify-center text-white shadow-lg shadow-violet-950/25 transition active:scale-[0.97] motion-reduce:transform-none"
+                >
+                  <svg className="w-5 h-5 -translate-x-px" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12H12m0 0h7.5"
+                    />
+                  </svg>
+                  <span className="sr-only">Send</span>
+                </button>
               </div>
             </div>
           </div>
 
           {/* Plan + research panel */}
           <div
-            className="w-full lg:w-[min(100%,26rem)] shrink-0 flex flex-col min-h-0 max-h-[min(46dvh,24rem)] lg:max-h-none border-t lg:border-t-0 lg:border-l border-white/[0.06] bg-[#08090c]"
+            className="w-full lg:w-[min(100%,22rem)] xl:w-[24rem] shrink-0 flex flex-col min-h-0 max-h-[min(42dvh,22rem)] lg:max-h-none lg:rounded-2xl lg:border lg:border-white/[0.08] lg:bg-[#0c0e14]/50 lg:shadow-xl lg:shadow-black/20 border-t lg:border-t-0 lg:ml-1 overflow-hidden"
             role="complementary"
             aria-label="Research and plan"
           >
+            <div className="shrink-0 px-4 pt-4 pb-2 border-b border-white/[0.06]">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Outputs
+              </h2>
+              <p className="text-[11px] text-slate-600 mt-1">Research brief &amp; plan file</p>
+            </div>
             <div
-              className="shrink-0 flex border-b border-white/[0.06] bg-[#0a0b0e]/80 p-1 gap-0.5"
+              className="shrink-0 flex p-2 gap-1"
               role="tablist"
               aria-label="Output panel"
             >
@@ -1204,9 +1414,9 @@ export default function App() {
                 role="tab"
                 id="tab-research"
                 aria-selected={rightPanelTab === 'research'}
-                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors ${
+                className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-medium transition-colors ${
                   rightPanelTab === 'research'
-                    ? 'text-violet-100 bg-violet-500/20 shadow-sm'
+                    ? 'text-white bg-violet-600/25 ring-1 ring-violet-500/35'
                     : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
                 }`}
                 onClick={() => setRightPanelTab('research')}
@@ -1214,7 +1424,7 @@ export default function App() {
                 Research
                 {research && (
                   <span
-                    className="inline-flex size-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.45)]"
+                    className="inline-flex size-1.5 rounded-full bg-emerald-400"
                     title="Has content"
                   />
                 )}
@@ -1224,9 +1434,9 @@ export default function App() {
                 role="tab"
                 id="tab-plan"
                 aria-selected={rightPanelTab === 'plan'}
-                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors ${
+                className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-medium transition-colors ${
                   rightPanelTab === 'plan'
-                    ? 'text-violet-100 bg-violet-500/20 shadow-sm'
+                    ? 'text-white bg-violet-600/25 ring-1 ring-violet-500/35'
                     : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
                 }`}
                 onClick={() => setRightPanelTab('plan')}
@@ -1234,45 +1444,47 @@ export default function App() {
                 Plan
                 {planMd && (
                   <span
-                    className="inline-flex size-1.5 rounded-full bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.4)]"
+                    className="inline-flex size-1.5 rounded-full bg-violet-400"
                     title="Has content"
                   />
                 )}
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4">
               <div
                 className={rightPanelTab === 'research' ? 'block' : 'hidden'}
                 role="tabpanel"
                 aria-labelledby="tab-research"
               >
                 {research ? (
-                  <div>
-                    <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-                      Sources
-                    </h3>
-                    <ul className="mt-2 text-xs text-slate-400 space-y-1.5 max-h-36 lg:max-h-28 overflow-y-auto">
-                      {research.sources?.slice(0, 12).map((s) => (
-                        <li key={s.href}>
-                          <a
-                            href={s.href}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-violet-300/90 hover:text-violet-200 hover:underline line-clamp-2 leading-snug"
-                          >
-                            {s.title || s.href}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="mt-3 pt-3 border-t border-white/[0.06] text-slate-200/95">
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                        Sources
+                      </h3>
+                      <ul className="mt-2 text-xs text-slate-400 space-y-2 max-h-32 overflow-y-auto">
+                        {research.sources?.slice(0, 12).map((s) => (
+                          <li key={s.href}>
+                            <a
+                              href={s.href}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-violet-300/90 hover:text-violet-200 line-clamp-2 leading-snug"
+                            >
+                              {s.title || s.href}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="rounded-xl border border-white/[0.06] bg-black/20 p-3 text-slate-200/95">
                       <MessageMarkdown text={research.brief} size="panel" />
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-slate-600/35 bg-slate-900/20 px-3 py-4">
-                    <p className="text-sm text-slate-400 leading-relaxed">
-                      Research briefs and source links show here while the run collects context.
+                  <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center">
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      No research yet. The orchestrator runs web search when it chooses to.
                     </p>
                   </div>
                 )}
@@ -1282,26 +1494,26 @@ export default function App() {
                 role="tabpanel"
                 aria-labelledby="tab-plan"
               >
-                <div className="flex justify-between items-center gap-2 mb-2.5">
-                  <h3 className="text-sm font-semibold text-slate-100">Plan document</h3>
+                <div className="flex justify-between items-center gap-2 mb-3">
+                  <h3 className="text-sm font-medium text-slate-200">plan.md</h3>
                   {planMd && (
                     <button
                       type="button"
                       onClick={downloadPlan}
-                      className="text-xs font-medium rounded-lg border border-violet-500/35 bg-violet-500/10 px-2.5 py-1.5 text-violet-200 hover:bg-violet-500/20"
+                      className="text-xs font-medium rounded-lg bg-violet-600 hover:bg-violet-500 px-3 py-1.5 text-white"
                     >
                       Download
                     </button>
                   )}
                 </div>
                 {planMd ? (
-                  <div className="max-h-[min(36dvh,16rem)] lg:max-h-[min(60vh,28rem)] overflow-y-auto rounded-xl border border-slate-700/40 bg-slate-950/40 p-3 shadow-inner">
+                  <div className="max-h-[min(36dvh,16rem)] lg:max-h-[min(60vh,28rem)] overflow-y-auto rounded-xl border border-white/[0.08] bg-black/25 p-3">
                     <MessageMarkdown text={planMd} size="panel" />
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-slate-600/35 bg-slate-900/20 px-3 py-4">
+                  <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center">
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      The structured plan will appear when the council finishes a synthesis pass.
+                      Plan appears here when the run reaches the planning step.
                     </p>
                   </div>
                 )}
