@@ -20,6 +20,7 @@ import {
   councilConfigToJsonString,
   configSignature,
   defaultSynthesizer,
+  mergeCouncilDefaults,
   parseCouncilConfigText,
   uniqueNewAgentId,
 } from '../agentsConfigUtils'
@@ -193,10 +194,7 @@ export function AgentsTab() {
   }, [config])
 
   const setConfigFromServer = useCallback((c: CouncilConfig) => {
-    const next: CouncilConfig = {
-      ...c,
-      synthesizer: c.synthesizer ?? defaultSynthesizer(),
-    }
+    const next = mergeCouncilDefaults(c)
     setConfig(next)
     setBaselineSig(configSignature(next))
     setSel((prev) => {
@@ -432,6 +430,18 @@ export function AgentsTab() {
     })
   }, [])
 
+  const updateOrchestrator = useCallback((patch: Partial<AgentDef>) => {
+    setConfig((c) => {
+      if (!c) return c
+      const base = mergeCouncilDefaults(c).orchestrator!
+      return { ...c, orchestrator: { ...base, ...patch } }
+    })
+  }, [])
+
+  const setOrchestratorUserInstructions = useCallback((text: string) => {
+    setConfig((c) => (c ? { ...c, orchestrator_user_instructions: text } : c))
+  }, [])
+
   const moveDebater = useCallback((index: number, dir: -1 | 1) => {
     setConfig((c) => {
       if (!c) return c
@@ -529,8 +539,15 @@ export function AgentsTab() {
     setSaved(false)
     setSaving(true)
     try {
-      await putCouncil(config, councilId)
-      setBaselineSig(configSignature(config))
+      const normalized = mergeCouncilDefaults(config)
+      const toSave: CouncilConfig = {
+        ...normalized,
+        orchestrator_user_instructions:
+          normalized.orchestrator_user_instructions?.trim() || undefined,
+      }
+      await putCouncil(toSave, councilId)
+      setConfig(mergeCouncilDefaults(toSave))
+      setBaselineSig(configSignature(toSave))
       setSaved(true)
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed')
@@ -571,8 +588,9 @@ export function AgentsTab() {
           }
         }
         if (!parsed.synthesizer) parsed.synthesizer = defaultSynthesizer()
-        setConfig(parsed)
-        setBaselineSig(configSignature(parsed))
+        const merged = mergeCouncilDefaults(parsed)
+        setConfig(merged)
+        setBaselineSig(configSignature(merged))
         setSaveError(null)
         setSaved(false)
         setSel(
@@ -663,6 +681,7 @@ export function AgentsTab() {
 
   const debaters = config.debating_agents
   const synth = config.synthesizer!
+  const orch = mergeCouncilDefaults(config).orchestrator!
   const canRemoveDebate = debaters.length > 1
 
   const saveToServerRow = (
@@ -692,9 +711,10 @@ export function AgentsTab() {
   return (
     <div className="space-y-4 pb-8">
       <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-        Pick a node to edit. The <span className="text-slate-200">row</span> is debate order
-        (each round); the <span className="text-violet-300/90">Synthesizer</span> condenses
-        agreement before the plan writer. Each profile is a file under{' '}
+        The <span className="text-amber-200/90">Orchestrator</span> chooses each step (which
+        specialist, synthesizer, you, or finish). Below that, the <span className="text-slate-200">row</span>{' '}
+        is specialist order for reference; the <span className="text-violet-300/90">Synthesizer</span>{' '}
+        condenses debate before the plan writer. Profiles live under{' '}
         <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
       </p>
 
@@ -797,6 +817,67 @@ export function AgentsTab() {
         <kbd className="kbd-hint">↓</kbd> to change selection; click a node to open the editor.{' '}
         <kbd className="kbd-hint">Esc</kbd> closes the editor.
       </p>
+
+      <div className="rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/25 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-amber-200/95">Orchestrator routing</h3>
+          <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
+            <span className="text-slate-400">System prompt</span> is the orchestrator&apos;s role
+            (sent as the system message).{' '}
+            <span className="text-slate-400">Routing guidelines</span> are inserted into each routing
+            user turn. The fixed JSON action schema is in{' '}
+            <code className="text-slate-600">backend/app/prompts/orchestrator.py</code>. Clear
+            guidelines and save to fall back to server defaults.
+          </p>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <label className="block text-xs text-slate-400">
+            Display name
+            <input
+              type="text"
+              className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+              value={orch.name}
+              onChange={(e) => updateOrchestrator({ name: e.target.value })}
+            />
+          </label>
+          <label className="block text-xs text-slate-400">
+            Title
+            <input
+              type="text"
+              className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+              value={orch.title}
+              onChange={(e) => updateOrchestrator({ title: e.target.value })}
+            />
+          </label>
+          <label className="block text-xs text-slate-400 sm:col-span-2">
+            Agent id{' '}
+            <span className="text-slate-600 font-normal">(stable in logs; change with care)</span>
+            <input
+              type="text"
+              className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 font-mono focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+              value={orch.id}
+              onChange={(e) => updateOrchestrator({ id: e.target.value.trim() || orch.id })}
+            />
+          </label>
+        </div>
+        <label className="block text-xs text-slate-400">
+          System prompt
+          <textarea
+            className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 leading-relaxed focus:outline-none focus:ring-1 focus:ring-amber-500/40 min-h-[6rem] sm:min-h-[7rem]"
+            value={orch.system_prompt}
+            onChange={(e) => updateOrchestrator({ system_prompt: e.target.value })}
+          />
+        </label>
+        <label className="block text-xs text-slate-400">
+          Routing guidelines (user message)
+          <textarea
+            className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 leading-relaxed focus:outline-none focus:ring-1 focus:ring-amber-500/40 min-h-[8rem] sm:min-h-[10rem] font-mono text-[13px]"
+            value={config.orchestrator_user_instructions ?? ''}
+            onChange={(e) => setOrchestratorUserInstructions(e.target.value)}
+            placeholder="Leave empty to use defaults from backend/app/prompts/orchestrator.py"
+          />
+        </label>
+      </div>
 
         {/* Graph — full width so the page does not feel cramped */}
         <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-slate-900/50 to-slate-950/60 p-4 sm:p-5 overflow-x-auto max-w-5xl">

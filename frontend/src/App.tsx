@@ -75,6 +75,25 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
       body: e.questions.map((q) => `- ${q}`).join('\n'),
     }
   }
+  if (t === 'orchestrator') {
+    const e = ev as {
+      action: string
+      reason?: string
+      agent_id?: string | null
+      step?: number
+    }
+    const bits = [e.reason, e.agent_id ? `→ ${e.agent_id}` : '']
+      .filter(Boolean)
+      .join(' ')
+    return {
+      kind: 'phase',
+      title:
+        e.step != null
+          ? `Orchestrator (step ${e.step}) · ${e.action}`
+          : `Orchestrator · ${e.action}`,
+      body: bits,
+    }
+  }
   if (t === 'synth') {
     const e = ev as { summary: string }
     return { kind: 'synth', title: 'Synthesizer', body: e.summary }

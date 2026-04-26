@@ -8,8 +8,28 @@ const DEFAULT_SYNTH: AgentDef = {
   tools_enabled: false,
 }
 
+/** Matches backend default when council has no orchestrator object. */
+export const DEFAULT_ORCHESTRATOR_AGENT: AgentDef = {
+  id: 'orchestrator',
+  name: 'Orchestrator',
+  title: 'Routing and flow',
+  system_prompt:
+    'You are the Council Orchestrator. Choose exactly ONE next step for the planning workflow. Do not debate product details yourself.',
+  tools_enabled: false,
+}
+
 export function defaultSynthesizer(): AgentDef {
   return { ...DEFAULT_SYNTH }
+}
+
+/** Normalize optional council fields so the settings UI always has orchestrator + instructions string. */
+export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
+  return {
+    ...c,
+    synthesizer: c.synthesizer ?? defaultSynthesizer(),
+    orchestrator: c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT,
+    orchestrator_user_instructions: c.orchestrator_user_instructions ?? '',
+  }
 }
 
 function normalizeAgentFromJson(
@@ -65,9 +85,27 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     if (s) synthesizer = s
   }
 
+  let orchestrator: AgentDef | null = null
+  if (o.orchestrator != null && typeof o.orchestrator === 'object') {
+    const oc = normalizeAgentFromJson(
+      o.orchestrator as Record<string, unknown>,
+      'orchestrator'
+    )
+    if (oc) orchestrator = oc
+  }
+
+  let orchestrator_user_instructions: string | undefined
+  if (typeof o.orchestrator_user_instructions === 'string') {
+    orchestrator_user_instructions = o.orchestrator_user_instructions
+  }
+
   return {
     debating_agents: debaters,
     synthesizer: synthesizer ?? { ...DEFAULT_SYNTH },
+    ...(orchestrator ? { orchestrator } : {}),
+    ...(orchestrator_user_instructions !== undefined
+      ? { orchestrator_user_instructions }
+      : {}),
   }
 }
 
@@ -80,11 +118,14 @@ export function parseCouncilConfigText(text: string): CouncilConfig | null {
 }
 
 export function councilConfigToJsonString(c: CouncilConfig): string {
-  return JSON.stringify(
-    { debating_agents: c.debating_agents, synthesizer: c.synthesizer },
-    null,
-    2
-  )
+  const o: Record<string, unknown> = {}
+  if (c.orchestrator) o.orchestrator = c.orchestrator
+  if (c.orchestrator_user_instructions?.trim()) {
+    o.orchestrator_user_instructions = c.orchestrator_user_instructions.trim()
+  }
+  o.debating_agents = c.debating_agents
+  o.synthesizer = c.synthesizer
+  return JSON.stringify(o, null, 2)
 }
 
 export function configSignature(c: CouncilConfig): string {

@@ -6,6 +6,12 @@ from typing import Any
 
 from .council_config import AgentDef, CouncilConfigFile
 from .config import Settings
+from .prompts.debate import AGENT_TURN_SCHEMA
+from .prompts.orchestrator import (
+    DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
+    ORCHESTRATOR_SYSTEM_JSON_SUFFIX,
+    build_orchestrator_user_message,
+)
 from .llm import (
     ChatMsg,
     _msg_system,
@@ -19,14 +25,159 @@ from .session import ChatMessage, CouncilSession, SessionPhase, SessionStore
 from .tools.fetch_url import fetch_url_text
 from .tools.search import ddg_search
 
-AGENT_TURN_SCHEMA = """
-Return JSON only:
-{
-  "reaction": "string (short; reference other agents in this round when present)",
-  "user_question": "string or null (at most one blocking question, else null)",
-  "planner_note": "string (bullets for the final plan)"
-}
-""".strip()
+
+def effective_orchestrator(council: CouncilConfigFile) -> AgentDef:
+    o = council.orchestrator
+    if o is not None:
+        return o
+    return AgentDef(
+        id="orchestrator",
+        name="Orchestrator",
+        title="Council routing",
+        system_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
+        tools_enabled=False,
+    )
+
+
+def _debater_by_id(debaters: list[AgentDef], agent_id: str) -> AgentDef | None:
+    for a in debaters:
+        if a.id == agent_id:
+            return a
+    return None
+
+
+def _call_counts(agent_turns: list[dict[str, Any]], debater_ids: set[str]) -> dict[str, int]:
+    c = {i: 0 for i in debater_ids}
+    for t in agent_turns:
+        aid = str(t.get("agent_id", ""))
+        if aid in c:
+            c[aid] += 1
+    return c
+
+
+def _pick_least_called_debater(debaters: list[AgentDef], agent_turns: list[dict[str, Any]]) -> AgentDef:
+    ids = {a.id for a in debaters}
+    c = _call_counts(agent_turns, ids)
+    return min(debaters, key=lambda a: (c.get(a.id, 0), a.id))
+
+
+def _normalize_orch_decision(
+    data: dict[str, Any],
+    debater_ids: set[str],
+    synth_available: bool,
+    synth_done: bool,
+) -> tuple[str, str | None, list[str], str]:
+    reason = str(data.get("reason", "")).strip() or "(no reason)"
+    raw = str(data.get("action", "")).strip().lower().replace("-", "_")
+    aliases = {
+        "callagent": "call_agent",
+        "invoke_agent": "call_agent",
+        "agent": "call_agent",
+        "synthesizer": "call_synthesizer",
+        "synth": "call_synthesizer",
+        "merge": "call_synthesizer",
+        "human": "ask_user",
+        "hitl": "ask_user",
+        "askuser": "ask_user",
+        "user": "ask_user",
+        "plan": "ready_for_plan",
+        "finish": "ready_for_plan",
+        "done": "ready_for_plan",
+        "write_plan": "ready_for_plan",
+    }
+    action = aliases.get(raw, raw)
+    agent_id = data.get("agent_id")
+    aid: str | None
+    if agent_id is None or not str(agent_id).strip():
+        aid = None
+    else:
+        aid = str(agent_id).strip()
+    qs_raw = data.get("questions")
+    questions: list[str] = []
+    if isinstance(qs_raw, list):
+        questions = [str(q).strip() for q in qs_raw if str(q).strip()]
+    elif qs_raw is not None and str(qs_raw).strip():
+        questions = [str(qs_raw).strip()]
+
+    if action not in ("call_agent", "call_synthesizer", "ask_user", "ready_for_plan"):
+        action = "call_agent"
+        aid = None
+    if action == "call_synthesizer" and not synth_available:
+        action = "call_agent"
+        aid = None
+    if action == "call_synthesizer" and synth_done:
+        action = "ready_for_plan"
+        aid = None
+    if action == "call_agent" and aid is not None and aid not in debater_ids:
+        aid = None
+    if action == "ask_user" and not questions:
+        questions = [
+            "What is the most important constraint or scope decision we should lock before planning?"
+        ]
+    return action, aid, questions, reason
+
+
+async def _orchestrator_decide(
+    settings: Settings,
+    orch: AgentDef,
+    model: str,
+    user_brief: str,
+    research_brief: str,
+    transcript_summary: str,
+    debaters: list[AgentDef],
+    synth_available: bool,
+    synth_done: bool,
+    step_n: int,
+    max_steps: int,
+    council: CouncilConfigFile,
+) -> dict[str, Any]:
+    id_list = ", ".join(a.id for a in debaters)
+    roster = "\n".join(f"- `{a.id}` — {a.name} ({a.title})" for a in debaters)
+    user = build_orchestrator_user_message(
+        user_brief=user_brief,
+        research_brief=research_brief,
+        transcript_summary=transcript_summary,
+        roster=roster,
+        id_list=id_list,
+        synth_available=synth_available,
+        synth_done=synth_done,
+        step_n=step_n,
+        max_steps=max_steps,
+        instructions=council.orchestrator_user_instructions,
+    )
+    system = orch.system_prompt.strip() + ORCHESTRATOR_SYSTEM_JSON_SUFFIX
+    return await complete_structured_json(settings, system, user, model=model)
+
+
+async def _run_synthesizer_step(
+    settings: Settings,
+    session: CouncilSession,
+    council: CouncilConfigFile,
+) -> AsyncIterator[dict[str, Any]]:
+    s = session
+    syn = council.synthesizer
+    if not syn or s.synthesizer_ran:
+        return
+    all_turns_txt = _turns_to_transcript(s.agent_turns)
+    syn_text = await _synthesizer(
+        settings,
+        syn,
+        s.model,
+        s.user_brief,
+        s.research_brief,
+        all_turns_txt,
+    )
+    s.synthesizer_ran = True
+    s.last_synth_summary = syn_text
+    s.messages.append(
+        ChatMessage(
+            role="assistant",
+            content=syn_text,
+            agent_id=syn.id,
+            agent_name=syn.name,
+        )
+    )
+    yield {"type": "synth", "summary": syn_text}
 
 
 def _dedupe_qs(questions: list[str]) -> list[str]:
@@ -230,6 +381,158 @@ def _turns_to_transcript(agent_turns: list[dict[str, Any]]) -> str:
     )
 
 
+async def _orchestrate_discussion_loop(
+    settings: Settings,
+    s: CouncilSession,
+    council: CouncilConfigFile,
+    debaters: list[AgentDef],
+    orch: AgentDef,
+    *,
+    extra_transcript_prefix: str = "",
+) -> AsyncIterator[dict[str, Any]]:
+    debater_ids = {a.id for a in debaters}
+    max_steps = max(6, settings.orchestration_max_steps)
+    recent_keys: list[str] = []
+
+    step_n = 0
+    while True:
+        step_n += 1
+        if step_n > max_steps:
+            yield {
+                "type": "phase",
+                "phase": SessionPhase.discussion.value,
+                "message": "Orchestration step limit reached; wrapping up.",
+            }
+            break
+
+        transcript = (
+            extra_transcript_prefix + "\n" + _turns_to_summary(s.agent_turns)
+        ).strip()
+        raw = await _orchestrator_decide(
+            settings,
+            orch,
+            s.model,
+            s.user_brief,
+            s.research_brief,
+            transcript,
+            debaters,
+            council.synthesizer is not None,
+            s.synthesizer_ran,
+            step_n,
+            max_steps,
+            council,
+        )
+        action, agent_id, questions, reason = _normalize_orch_decision(
+            raw,
+            debater_ids,
+            council.synthesizer is not None,
+            s.synthesizer_ran,
+        )
+        key = f"{action}:{agent_id or ''}"
+        recent_keys.append(key)
+        if len(recent_keys) > 12:
+            recent_keys.pop(0)
+        if len(recent_keys) >= 6 and len(set(recent_keys[-6:])) == 1:
+            action = "ready_for_plan"
+            agent_id = None
+            reason = "(auto: breaking decision loop)"
+
+        yield {
+            "type": "orchestrator",
+            "action": action,
+            "reason": reason,
+            "agent_id": agent_id,
+            "step": step_n,
+        }
+
+        if action == "ask_user":
+            qs = _dedupe_qs(questions)[:3]
+            if not qs:
+                qs = [
+                    "What is the most important constraint or scope decision "
+                    "we should lock before planning?"
+                ]
+            s.last_consolidated_questions = qs
+            s.pending_user_questions = qs
+            s.phase = SessionPhase.awaiting_user
+            yield {"type": "awaiting_user", "questions": qs}
+            s.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content="The orchestrator needs your input:\n"
+                    + "\n".join(f"- {q}" for q in qs),
+                    agent_id="orchestrator",
+                    agent_name="Orchestrator",
+                    meta={"questions": qs, "action": "ask_user"},
+                )
+            )
+            return
+
+        if action == "ready_for_plan":
+            break
+
+        if action == "call_synthesizer":
+            async for ev in _run_synthesizer_step(settings, s, council):
+                yield ev
+            continue
+
+        if action == "call_agent":
+            ag = (
+                _debater_by_id(debaters, agent_id)
+                if agent_id
+                else _pick_least_called_debater(debaters, s.agent_turns)
+            )
+            s.discussion_round += 1
+            r = s.discussion_round
+            turn = await _agent_turn(
+                settings,
+                ag,
+                s.model,
+                s.user_brief,
+                s.research_brief,
+                transcript,
+                r,
+                "",
+            )
+            uq_s = turn.get("user_question")
+            rec: dict[str, Any] = {
+                "round": r,
+                "agent_id": ag.id,
+                "name": ag.name,
+                "reaction": turn.get("reaction", ""),
+                "planner_note": turn.get("planner_note", ""),
+                "user_question": uq_s,
+            }
+            s.agent_turns.append(rec)
+            s.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=turn.get("reaction", ""),
+                    agent_id=ag.id,
+                    agent_name=ag.name,
+                    meta={
+                        "planner_note": rec["planner_note"],
+                        "round": r,
+                        "user_question": uq_s,
+                    },
+                )
+            )
+            yield {
+                "type": "agent",
+                "round": r,
+                "agent_id": ag.id,
+                "name": ag.name,
+                "reaction": turn.get("reaction", ""),
+                "planner_note": turn.get("planner_note", ""),
+                "user_question": uq_s,
+            }
+
+    if s.phase == SessionPhase.awaiting_user:
+        return
+    async for ev in _run_synthesizer_step(settings, s, council):
+        yield ev
+
+
 async def run_council_pipeline(
     settings: Settings,
     _store: SessionStore,
@@ -246,62 +549,32 @@ async def run_council_pipeline(
         yield {"type": "error", "message": s.error_message}
         return
 
+    orch = effective_orchestrator(council)
+
     try:
-        # --- Awaiting user: run round 2 only, then plan ---
         if s.phase == SessionPhase.awaiting_user:
             s.messages.append(ChatMessage(role="user", content=user_message))
             s.user_answered_clarification = True
             s.pending_user_questions = []
-            answer_ctx = f"\n[User answered clarification]\n{user_message}\n"
-            prior_summary = _turns_to_summary(s.agent_turns) + answer_ctx
             s.phase = SessionPhase.discussion
-            r = 2
-            s.discussion_round = r
-            yield {"type": "phase", "phase": SessionPhase.discussion.value, "round": r, "message": f"Round {r} (post-clarification)"}
-            same_round = ""
-            for ag in debaters:
-                turn = await _agent_turn(
-                    settings,
-                    ag,
-                    s.model,
-                    s.user_brief,
-                    s.research_brief,
-                    prior_summary,
-                    r,
-                    same_round,
-                )
-                uq_s = turn.get("user_question")
-                rec: dict[str, Any] = {
-                    "round": r,
-                    "agent_id": ag.id,
-                    "name": ag.name,
-                    "reaction": turn.get("reaction", ""),
-                    "planner_note": turn.get("planner_note", ""),
-                    "user_question": uq_s,
-                }
-                s.agent_turns.append(rec)
-                s.messages.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=turn.get("reaction", ""),
-                        agent_id=ag.id,
-                        agent_name=ag.name,
-                        meta={"planner_note": rec["planner_note"], "round": r, "user_question": uq_s},
-                    )
-                )
-                same_round += f"### {ag.name}\n{turn.get('reaction', '')}\n"
-                prior_summary = _turns_to_summary(s.agent_turns) + answer_ctx
-                yield {
-                    "type": "agent",
-                    "round": r,
-                    "agent_id": ag.id,
-                    "name": ag.name,
-                    "reaction": turn.get("reaction", ""),
-                    "planner_note": turn.get("planner_note", ""),
-                    "user_question": uq_s,
-                }
+            extra = f"\n[User clarification]\n{user_message}\n"
+            yield {
+                "type": "phase",
+                "phase": SessionPhase.discussion.value,
+                "message": "Resuming after your input",
+            }
+            async for ev in _orchestrate_discussion_loop(
+                settings,
+                s,
+                council,
+                debaters,
+                orch,
+                extra_transcript_prefix=extra,
+            ):
+                yield ev
+            if s.phase == SessionPhase.awaiting_user:
+                return
         else:
-            # --- New problem: set brief, research, round 1 ---
             s.user_brief = user_message.strip()
             if not (s.title or "").strip():
                 s.title = (s.user_brief.split("\n")[0].strip() or "New plan")[:80]
@@ -310,21 +583,36 @@ async def run_council_pipeline(
             s.user_answered_clarification = False
             s.plan_markdown = ""
             s.last_consolidated_questions = []
+            s.synthesizer_ran = False
+            s.last_synth_summary = ""
+            s.discussion_round = 0
 
             yield {"type": "phase", "phase": SessionPhase.research.value}
             sp = await _generate_search_plan(settings, s.user_brief, s.model)
-            qlist = [str(x) for x in (sp.get("queries") or []) if str(x).strip()][: settings.research_max_queries]
+            qlist = [
+                str(x)
+                for x in (sp.get("queries") or [])
+                if str(x).strip()
+            ][: settings.research_max_queries]
             if not qlist and s.user_brief.strip():
                 first = s.user_brief.strip().split("\n", 1)[0].strip()[:200]
                 qlist = [first] if first else []
-            urls = [str(u) for u in (sp.get("urls_to_fetch") or []) if str(u).strip().lower().startswith("http")][:2]
+            urls = [
+                str(u)
+                for u in (sp.get("urls_to_fetch") or [])
+                if str(u).strip().lower().startswith("http")
+            ][:2]
 
             sources = _search_only(settings, qlist) if qlist else []
             fetches: list[dict[str, Any]] = []
             for u in urls:
                 fetches.append(await fetch_url_text(u, settings))
             s.research_sources = [
-                {"title": r.get("title", ""), "href": r.get("href", ""), "body": (r.get("body", "") or "")[:400]}
+                {
+                    "title": r.get("title", ""),
+                    "href": r.get("href", ""),
+                    "body": (r.get("body", "") or "")[:400],
+                }
                 for r in sources
             ]
             s.research_brief = await _summarize_research(
@@ -346,127 +634,17 @@ async def run_council_pipeline(
             }
 
             s.phase = SessionPhase.discussion
-            prior_summary = ""
-            r = 1
-            s.discussion_round = r
-            yield {"type": "phase", "phase": SessionPhase.discussion.value, "round": r, "message": f"Round {r}"}
-            same_round = ""
-            for ag in debaters:
-                turn = await _agent_turn(
-                    settings,
-                    ag,
-                    s.model,
-                    s.user_brief,
-                    s.research_brief,
-                    prior_summary,
-                    r,
-                    same_round,
-                )
-                uq_s = turn.get("user_question")
-                rec = {
-                    "round": r,
-                    "agent_id": ag.id,
-                    "name": ag.name,
-                    "reaction": turn.get("reaction", ""),
-                    "planner_note": turn.get("planner_note", ""),
-                    "user_question": uq_s,
-                }
-                s.agent_turns.append(rec)
-                s.messages.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=turn.get("reaction", ""),
-                        agent_id=ag.id,
-                        agent_name=ag.name,
-                        meta={"planner_note": rec["planner_note"], "round": r, "user_question": uq_s},
-                    )
-                )
-                same_round += f"### {ag.name}\n{turn.get('reaction', '')}\n"
-                prior_summary = _turns_to_summary(s.agent_turns)
-                yield {
-                    "type": "agent",
-                    "round": r,
-                    "agent_id": ag.id,
-                    "name": ag.name,
-                    "reaction": turn.get("reaction", ""),
-                    "planner_note": turn.get("planner_note", ""),
-                    "user_question": uq_s,
-                }
-
-            qs: list[str] = []
-            for t in s.agent_turns:
-                if t.get("round") == 1 and t.get("user_question"):
-                    qs.append(str(t["user_question"]))
-            qs = _dedupe_qs(qs)
-            if qs and not s.user_answered_clarification:
-                s.last_consolidated_questions = qs
-                s.pending_user_questions = qs
-                s.phase = SessionPhase.awaiting_user
-                yield {"type": "awaiting_user", "questions": qs}
-                s.messages.append(
-                    ChatMessage(
-                        role="assistant",
-                        content="A few quick clarifications would help:\n" + "\n".join(f"- {q}" for q in qs),
-                        agent_id="facilitator",
-                        agent_name="Facilitator",
-                        meta={"questions": qs},
-                    )
-                )
-                return
-
-            # No blocking questions after round 1: second discussion round, then plan
-            r2 = 2
-            s.discussion_round = r2
-            s.phase = SessionPhase.discussion
             yield {
                 "type": "phase",
                 "phase": SessionPhase.discussion.value,
-                "round": r2,
-                "message": f"Round {r2}",
+                "message": "Orchestrated council discussion",
             }
-            prior = _turns_to_summary(s.agent_turns)
-            same2 = ""
-            for ag in debaters:
-                turn2 = await _agent_turn(
-                    settings,
-                    ag,
-                    s.model,
-                    s.user_brief,
-                    s.research_brief,
-                    prior,
-                    r2,
-                    same2,
-                )
-                uq2 = turn2.get("user_question")
-                rec2: dict[str, Any] = {
-                    "round": r2,
-                    "agent_id": ag.id,
-                    "name": ag.name,
-                    "reaction": turn2.get("reaction", ""),
-                    "planner_note": turn2.get("planner_note", ""),
-                    "user_question": uq2,
-                }
-                s.agent_turns.append(rec2)
-                s.messages.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=turn2.get("reaction", ""),
-                        agent_id=ag.id,
-                        agent_name=ag.name,
-                        meta={"planner_note": rec2["planner_note"], "round": r2, "user_question": uq2},
-                    )
-                )
-                same2 += f"### {ag.name}\n{turn2.get('reaction', '')}\n"
-                prior = _turns_to_summary(s.agent_turns)
-                yield {
-                    "type": "agent",
-                    "round": r2,
-                    "agent_id": ag.id,
-                    "name": ag.name,
-                    "reaction": turn2.get("reaction", ""),
-                    "planner_note": turn2.get("planner_note", ""),
-                    "user_question": uq2,
-                }
+            async for ev in _orchestrate_discussion_loop(
+                settings, s, council, debaters, orch
+            ):
+                yield ev
+            if s.phase == SessionPhase.awaiting_user:
+                return
 
     except Exception as e:  # noqa: BLE001
         s.phase = SessionPhase.error
@@ -474,33 +652,25 @@ async def run_council_pipeline(
         yield {"type": "error", "message": str(e)}
         return
 
-    # Synthesizer + plan
+    if s.phase == SessionPhase.awaiting_user:
+        return
+
     try:
         all_turns_txt = _turns_to_transcript(s.agent_turns)
-        syn = council.synthesizer
-        syn_text = "No synthesizer; see council detail."
-        s.phase = SessionPhase.plan
-        yield {"type": "phase", "phase": SessionPhase.plan.value, "message": "Synthesizing"}
-        if syn:
-            syn_text = await _synthesizer(
-                settings,
-                syn,
-                s.model,
-                s.user_brief,
-                s.research_brief,
-                all_turns_txt,
-            )
-            s.messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=syn_text,
-                    agent_id="synthesizer",
-                    agent_name=syn.name,
-                )
-            )
-            yield {"type": "synth", "summary": syn_text}
+        syn_text = (
+            (s.last_synth_summary or "").strip()
+            if council.synthesizer
+            else "No synthesizer; see council detail."
+        )
+        if council.synthesizer and not syn_text:
+            syn_text = "No synthesizer; see council detail."
 
-        yield {"type": "phase", "phase": SessionPhase.plan.value, "message": "Writing plan.md"}
+        s.phase = SessionPhase.plan
+        yield {
+            "type": "phase",
+            "phase": SessionPhase.plan.value,
+            "message": "Writing plan.md",
+        }
         spec = await _plan_writer(
             settings,
             s.model,

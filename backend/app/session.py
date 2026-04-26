@@ -50,6 +50,8 @@ class CouncilSession:
     plan_filename: str = "plan.md"
     error_message: str | None = None
     user_answered_clarification: bool = False
+    synthesizer_ran: bool = False
+    last_synth_summary: str = ""
 
 
 def new_session_id() -> str:

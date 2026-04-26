@@ -80,6 +80,13 @@ export type SseEvent =
       user_question?: string | null
     }
   | { type: 'awaiting_user'; questions: string[] }
+  | {
+      type: 'orchestrator'
+      action: string
+      reason?: string
+      agent_id?: string | null
+      step?: number
+    }
   | { type: 'synth'; summary: string }
   | { type: 'plan'; content: string; filename: string }
   | { type: 'error'; message: string }
@@ -98,6 +105,13 @@ export type AgentDef = {
 export type CouncilConfig = {
   debating_agents: AgentDef[]
   synthesizer: AgentDef | null
+  /** When null/omitted, the API uses a built-in routing prompt. */
+  orchestrator?: AgentDef | null
+  /**
+   * Routing guidelines injected into the orchestrator user message.
+   * Empty/omitted → server uses backend/app/prompts/orchestrator.py defaults.
+   */
+  orchestrator_user_instructions?: string | null
 }
 
 export async function listCouncils(): Promise<string[]> {

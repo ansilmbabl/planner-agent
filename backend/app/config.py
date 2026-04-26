@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     councils_dir: Path = Path(__file__).resolve().parents[2] / "config" / "councils"
     research_max_queries: int = 3
     discussion_rounds: int = 2
+    orchestration_max_steps: int = 24
     max_url_fetch_bytes: int = 200_000
     url_fetch_timeout_s: float = 15.0
     request_timeout_s: float = 120.0

@@ -361,6 +361,8 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
         sess.pending_user_questions = []
         sess.user_answered_clarification = False
         sess.error_message = None
+        sess.synthesizer_ran = False
+        sess.last_synth_summary = ""
 
     if sess.phase == SessionPhase.error:
         sess.phase = SessionPhase.idle

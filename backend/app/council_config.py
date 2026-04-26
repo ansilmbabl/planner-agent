@@ -17,6 +17,16 @@ class AgentDef(BaseModel):
 class CouncilConfigFile(BaseModel):
     debating_agents: list[AgentDef] = Field(default_factory=list)
     synthesizer: AgentDef | None = None
+    orchestrator: AgentDef | None = Field(
+        default=None,
+        description="Routes each step: which specialist, synthesizer, user, or plan. "
+        "If omitted, the backend uses a built-in orchestrator prompt.",
+    )
+    orchestrator_user_instructions: str | None = Field(
+        default=None,
+        description="Inserted into the routing user message under 'Routing guidelines'. "
+        "If omitted, backend/prompts/orchestrator.py defaults apply.",
+    )
 
 
 def load_council_config(path: Path) -> CouncilConfigFile:
