@@ -22,6 +22,30 @@ def _str_list_to_objects(items: Any, key: str) -> list[Any]:
     return out
 
 
+def _normalize_tech_stack(items: Any) -> list[dict[str, Any]]:
+    """LLMs often omit choice or rationale on tech_stack rows; fill defaults."""
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for el in items:
+        if not isinstance(el, dict):
+            continue
+        row = dict(el)
+        if "component" not in row or row.get("component") is None:
+            row["component"] = ""
+        else:
+            row["component"] = str(row["component"]).strip()
+        for key in ("choice", "rationale"):
+            if key not in row or row.get(key) is None:
+                row[key] = ""
+            else:
+                row[key] = str(row[key]).strip()
+        out.append(row)
+    return out
+
+
 class NonGoal(BaseModel):
     item: str
 
@@ -32,8 +56,8 @@ class ConstraintItem(BaseModel):
 
 class TechRow(BaseModel):
     component: str
-    choice: str
-    rationale: str
+    choice: str = ""
+    rationale: str = ""
 
 
 class DataModelItem(BaseModel):
@@ -109,6 +133,7 @@ def _normalize_plan_spec_dict(d: Any) -> dict[str, Any]:
     d["constraints"] = _str_list_to_objects(d.get("constraints"), "description")
     d["open_questions"] = _str_list_to_objects(d.get("open_questions"), "question")
     d["testing"] = _str_list_to_objects(d.get("testing"), "item")
+    d["tech_stack"] = _normalize_tech_stack(d.get("tech_stack"))
     # Checklist: sometimes list of task strings
     ch = d.get("checklist")
     if isinstance(ch, list):
@@ -133,7 +158,7 @@ For non_goals, constraints, and open_questions you may use either an array of ob
   "non_goals": [{"item": "string"}],
   "constraints": [{"description": "string"}],
   "proposed_approach": "string",
-  "tech_stack": [{"component": "string", "choice": "string", "rationale": "string"}],
+  "tech_stack": [{"component": "string", "choice": "string", "rationale": "string (optional, defaults to empty)"}],
   "data_model_and_interfaces": [{"name": "string", "details": "string"}],
   "phases": [{
     "name": "string",
