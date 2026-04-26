@@ -26,6 +26,7 @@ export function defaultSynthesizer(): AgentDef {
 export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
   return {
     ...c,
+    initial_research: c.initial_research !== false,
     synthesizer: c.synthesizer ?? defaultSynthesizer(),
     orchestrator: c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT,
     orchestrator_user_instructions: c.orchestrator_user_instructions ?? '',
@@ -99,6 +100,11 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     orchestrator_user_instructions = o.orchestrator_user_instructions
   }
 
+  let initial_research: boolean | undefined
+  if (typeof o.initial_research === 'boolean') {
+    initial_research = o.initial_research
+  }
+
   return {
     debating_agents: debaters,
     synthesizer: synthesizer ?? { ...DEFAULT_SYNTH },
@@ -106,6 +112,7 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     ...(orchestrator_user_instructions !== undefined
       ? { orchestrator_user_instructions }
       : {}),
+    ...(initial_research !== undefined ? { initial_research } : {}),
   }
 }
 
@@ -119,6 +126,9 @@ export function parseCouncilConfigText(text: string): CouncilConfig | null {
 
 export function councilConfigToJsonString(c: CouncilConfig): string {
   const o: Record<string, unknown> = {}
+  if (c.initial_research === false) {
+    o.initial_research = false
+  }
   if (c.orchestrator) o.orchestrator = c.orchestrator
   if (c.orchestrator_user_instructions?.trim()) {
     o.orchestrator_user_instructions = c.orchestrator_user_instructions.trim()

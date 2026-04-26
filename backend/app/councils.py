@@ -105,6 +105,7 @@ def new_orchestrator_only_council() -> CouncilConfigFile:
             tools_enabled=False,
         ),
         orchestrator_user_instructions=DEFAULT_ORCHESTRATOR_USER_INSTRUCTIONS,
+        initial_research=False,
     )
 
 

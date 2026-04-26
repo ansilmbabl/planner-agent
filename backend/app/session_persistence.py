@@ -64,6 +64,9 @@ def session_to_dict(s: CouncilSession) -> dict[str, Any]:
         "user_answered_clarification": s.user_answered_clarification,
         "synthesizer_ran": getattr(s, "synthesizer_ran", False),
         "last_synth_summary": getattr(s, "last_synth_summary", "") or "",
+        "skip_implementation_plan": bool(
+            getattr(s, "skip_implementation_plan", False)
+        ),
     }
 
 
@@ -100,6 +103,7 @@ def session_from_dict(d: dict[str, Any]) -> CouncilSession:
         user_answered_clarification=bool(d.get("user_answered_clarification", False)),
         synthesizer_ran=bool(d.get("synthesizer_ran", False)),
         last_synth_summary=str(d.get("last_synth_summary") or ""),
+        skip_implementation_plan=bool(d.get("skip_implementation_plan", False)),
     )
 
 

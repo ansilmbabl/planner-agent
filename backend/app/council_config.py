@@ -27,6 +27,12 @@ class CouncilConfigFile(BaseModel):
         description="Inserted into the routing user message under 'Routing guidelines'. "
         "If omitted, backend/prompts/orchestrator.py defaults apply.",
     )
+    initial_research: bool = Field(
+        default=True,
+        description="Soft preference for the orchestrator prompt only: if True, lean toward "
+        "choosing run_research when grounding helps; if False, use run_research only when "
+        "clearly needed. The orchestrator always decides each step; nothing runs before its first decision.",
+    )
 
 
 def load_council_config(path: Path) -> CouncilConfigFile:

@@ -104,6 +104,14 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     const e = ev as { summary: string }
     return { kind: 'synth', title: 'Synthesizer', body: e.summary }
   }
+  if (t === 'orchestrator_reply') {
+    const e = ev as { content: string }
+    return {
+      kind: 'text',
+      title: 'Orchestrator',
+      body: e.content,
+    }
+  }
   if (t === 'error') {
     const e = ev as { message: string }
     return { kind: 'err', title: 'Error', body: e.message }
@@ -633,7 +641,7 @@ export default function App() {
               Planner Council
             </h1>
             <p className="text-xs text-slate-500 leading-snug mt-0.5">
-              Council → research →{' '}
+              Orchestrator routes → optional research →{' '}
               <span className="text-violet-300/95">plan.md</span>
             </p>
           </div>
@@ -1045,7 +1053,7 @@ export default function App() {
                     Start a council run
                   </p>
                   <p className="text-slate-500 text-sm mt-2 leading-relaxed">
-                    The council debates, pulls research, then writes a structured plan.
+                    The orchestrator chooses each step (reply, research, specialists), then may write a plan.
                   </p>
                   <ol className="text-slate-400 text-sm mt-4 space-y-2.5 list-decimal list-inside leading-relaxed">
                     <li>

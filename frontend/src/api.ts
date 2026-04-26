@@ -90,6 +90,7 @@ export type SseEvent =
       step?: number
     }
   | { type: 'synth'; summary: string }
+  | { type: 'orchestrator_reply'; content: string }
   | { type: 'plan'; content: string; filename: string }
   | { type: 'error'; message: string }
   | { type: 'done' }
@@ -107,6 +108,11 @@ export type AgentDef = {
 export type CouncilConfig = {
   debating_agents: AgentDef[]
   synthesizer: AgentDef | null
+  /**
+   * Orchestrator hint only (default true): when true, lean toward run_research when grounding helps;
+   * when false, use run_research only when clearly needed. No steps run before the first orchestrator decision.
+   */
+  initial_research?: boolean
   /** When null/omitted, the API uses a built-in routing prompt. */
   orchestrator?: AgentDef | null
   /**

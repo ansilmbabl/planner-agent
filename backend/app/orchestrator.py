@@ -26,6 +26,11 @@ from .session import ChatMessage, CouncilSession, SessionPhase, SessionStore
 from .tools.fetch_url import fetch_url_text
 from .tools.search import ddg_search
 
+RESEARCH_PENDING_PLACEHOLDER = (
+    "_(No web research yet for this message — the orchestrator may choose `run_research` next, "
+    "or answer / call agents if that is sufficient.)_"
+)
+
 
 def effective_orchestrator(council: CouncilConfigFile) -> AgentDef:
     o = council.orchestrator
@@ -93,6 +98,19 @@ def _normalize_orch_decision(
         "finish": "ready_for_plan",
         "done": "ready_for_plan",
         "write_plan": "ready_for_plan",
+        "reply": "orchestrator_reply",
+        "answer": "orchestrator_reply",
+        "direct_reply": "orchestrator_reply",
+        "answer_user": "orchestrator_reply",
+        "orchestratoranswer": "orchestrator_reply",
+        "end_turn": "orchestrator_done",
+        "end_without_plan": "orchestrator_done",
+        "conversation_done": "orchestrator_done",
+        "complete_without_plan": "orchestrator_done",
+        "research": "run_research",
+        "web_research": "run_research",
+        "refresh_research": "run_research",
+        "search_web": "run_research",
     }
     action = aliases.get(raw, raw)
     if action == "call_agent":
@@ -122,7 +140,15 @@ def _normalize_orch_decision(
             agent_ids_out.append(aid)
     agent_ids_out = agent_ids_out[:cap]
 
-    if action not in ("call_agents", "call_synthesizer", "ask_user", "ready_for_plan"):
+    if action not in (
+        "call_agents",
+        "call_synthesizer",
+        "ask_user",
+        "ready_for_plan",
+        "orchestrator_reply",
+        "orchestrator_done",
+        "run_research",
+    ):
         action = "call_agents"
         agent_ids_out = []
     if action == "call_synthesizer" and not synth_available:
@@ -136,11 +162,18 @@ def _normalize_orch_decision(
             "What is the most important constraint or scope decision we should lock before planning?"
         ]
 
-    if action in ("ask_user", "ready_for_plan", "call_synthesizer"):
+    if action in (
+        "ask_user",
+        "ready_for_plan",
+        "call_synthesizer",
+        "orchestrator_done",
+        "orchestrator_reply",
+        "run_research",
+    ):
         agent_ids_out = []
     elif action == "call_agents":
         if not debaters:
-            action = "ready_for_plan"
+            action = "orchestrator_reply"
             agent_ids_out = []
         elif not agent_ids_out:
             agent_ids_out = [_pick_least_called_debater(debaters, agent_turns).id]
@@ -175,9 +208,41 @@ async def _orchestrator_decide(
         step_n=step_n,
         max_steps=max_steps,
         instructions=council.orchestrator_user_instructions,
+        prefer_research_when_helpful=council.initial_research,
     )
     system = orch.system_prompt.strip() + ORCHESTRATOR_SYSTEM_JSON_SUFFIX
     return await complete_structured_json(settings, system, user, model=model)
+
+
+async def _orchestrator_reply_text(
+    settings: Settings,
+    orch: AgentDef,
+    model: str,
+    user_brief: str,
+    research_brief: str,
+    transcript_summary: str,
+) -> str:
+    system = (
+        orch.system_prompt.strip()
+        + "\n\nFor this turn you answer the user directly. Be clear and helpful; markdown is fine. "
+        "Do not output JSON."
+    )
+    user = f"""## User request
+{user_brief}
+
+## Research context
+{research_brief}
+
+## Notes from this session so far
+{transcript_summary.strip() or '_(none)_'}
+
+Answer the user now."""
+    return await complete_chat(
+        settings,
+        [_msg_system(system), _msg_user(user)],
+        model=model,
+        temperature=0.3,
+    )
 
 
 async def _run_synthesizer_step(
@@ -282,6 +347,40 @@ async def _summarize_research(
         [_msg_system(system), _msg_user(user)],
         model=model,
         temperature=0.2,
+    )
+
+
+async def _run_web_research_phase(settings: Settings, s: CouncilSession) -> None:
+    """Search, optional URL fetches, summarize; updates s.research_sources and s.research_brief."""
+    sp = await _generate_search_plan(settings, s.user_brief, s.model)
+    qlist = [
+        str(x)
+        for x in (sp.get("queries") or [])
+        if str(x).strip()
+    ][: settings.research_max_queries]
+    if not qlist and s.user_brief.strip():
+        first = s.user_brief.strip().split("\n", 1)[0].strip()[:200]
+        qlist = [first] if first else []
+    urls = [
+        str(u)
+        for u in (sp.get("urls_to_fetch") or [])
+        if str(u).strip().lower().startswith("http")
+    ][:2]
+
+    sources = _search_only(settings, qlist) if qlist else []
+    fetches: list[dict[str, Any]] = []
+    for u in urls:
+        fetches.append(await fetch_url_text(u, settings))
+    s.research_sources = [
+        {
+            "title": r.get("title", ""),
+            "href": r.get("href", ""),
+            "body": (r.get("body", "") or "")[:400],
+        }
+        for r in sources
+    ]
+    s.research_brief = await _summarize_research(
+        settings, s.user_brief, sources, fetches, s.model
     )
 
 
@@ -433,6 +532,8 @@ async def _orchestrate_discussion_loop(
                 "phase": SessionPhase.discussion.value,
                 "message": "Orchestration step limit reached; wrapping up.",
             }
+            if not debaters:
+                s.skip_implementation_plan = True
             break
 
         transcript = (
@@ -464,10 +565,26 @@ async def _orchestrate_discussion_loop(
         recent_keys.append(key)
         if len(recent_keys) > 12:
             recent_keys.pop(0)
-        if len(recent_keys) >= 6 and len(set(recent_keys[-6:])) == 1:
-            action = "ready_for_plan"
+        orch_reply_stuck = (
+            len(recent_keys) >= 3
+            and len(set(recent_keys[-3:])) == 1
+            and recent_keys[-1].startswith("orchestrator_reply:")
+        )
+        if orch_reply_stuck:
+            action = "orchestrator_done"
+            s.skip_implementation_plan = True
             agent_ids = []
-            reason = "(auto: breaking decision loop)"
+            reason = "(auto: stopping repeated orchestrator_reply)"
+        elif len(recent_keys) >= 6 and len(set(recent_keys[-6:])) == 1:
+            if not debaters:
+                action = "orchestrator_done"
+                s.skip_implementation_plan = True
+                agent_ids = []
+                reason = "(auto: breaking orchestration loop)"
+            else:
+                action = "ready_for_plan"
+                agent_ids = []
+                reason = "(auto: breaking decision loop)"
 
         yield {
             "type": "orchestrator",
@@ -499,6 +616,57 @@ async def _orchestrate_discussion_loop(
                 )
             )
             return
+
+        if action == "orchestrator_done":
+            s.skip_implementation_plan = True
+            break
+
+        if action == "orchestrator_reply":
+            reply = (
+                await _orchestrator_reply_text(
+                    settings,
+                    orch,
+                    s.model,
+                    s.user_brief,
+                    s.research_brief,
+                    transcript,
+                )
+            ).strip()
+            if reply:
+                s.messages.append(
+                    ChatMessage(
+                        role="assistant",
+                        content=reply,
+                        agent_id=orch.id,
+                        agent_name=orch.name,
+                        meta={"action": "orchestrator_reply"},
+                    )
+                )
+                yield {"type": "orchestrator_reply", "content": reply}
+                # Orchestrator-only: one assistant reply completes the turn (model often
+                # re-picks orchestrator_reply instead of orchestrator_done).
+                if not debaters:
+                    s.skip_implementation_plan = True
+                    break
+            continue
+
+        if action == "run_research":
+            await _run_web_research_phase(settings, s)
+            s.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=s.research_brief,
+                    agent_id="system",
+                    agent_name="Research",
+                    meta={"sources": s.research_sources, "trigger": "orchestrator"},
+                )
+            )
+            yield {
+                "type": "research",
+                "brief": s.research_brief,
+                "sources": s.research_sources,
+            }
+            continue
 
         if action == "ready_for_plan":
             break
@@ -580,16 +748,8 @@ async def run_council_pipeline(
 ) -> AsyncIterator[dict[str, Any]]:
     s = session
     s.error_message = None
+    s.skip_implementation_plan = False
     debaters = council.debating_agents
-    if not debaters:
-        s.phase = SessionPhase.error
-        s.error_message = (
-            "This council has no debating agents yet. Open Settings → Agents, "
-            "add at least one specialist, save, then try again (or pick another council)."
-        )
-        yield {"type": "error", "message": s.error_message}
-        return
-
     orch = effective_orchestrator(council)
 
     try:
@@ -628,57 +788,13 @@ async def run_council_pipeline(
             s.last_synth_summary = ""
             s.discussion_round = 0
 
-            yield {"type": "phase", "phase": SessionPhase.research.value}
-            sp = await _generate_search_plan(settings, s.user_brief, s.model)
-            qlist = [
-                str(x)
-                for x in (sp.get("queries") or [])
-                if str(x).strip()
-            ][: settings.research_max_queries]
-            if not qlist and s.user_brief.strip():
-                first = s.user_brief.strip().split("\n", 1)[0].strip()[:200]
-                qlist = [first] if first else []
-            urls = [
-                str(u)
-                for u in (sp.get("urls_to_fetch") or [])
-                if str(u).strip().lower().startswith("http")
-            ][:2]
-
-            sources = _search_only(settings, qlist) if qlist else []
-            fetches: list[dict[str, Any]] = []
-            for u in urls:
-                fetches.append(await fetch_url_text(u, settings))
-            s.research_sources = [
-                {
-                    "title": r.get("title", ""),
-                    "href": r.get("href", ""),
-                    "body": (r.get("body", "") or "")[:400],
-                }
-                for r in sources
-            ]
-            s.research_brief = await _summarize_research(
-                settings, s.user_brief, sources, fetches, s.model
-            )
-            s.messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=s.research_brief,
-                    agent_id="system",
-                    agent_name="Research",
-                    meta={"sources": s.research_sources},
-                )
-            )
-            yield {
-                "type": "research",
-                "brief": s.research_brief,
-                "sources": s.research_sources,
-            }
-
+            s.research_sources = []
+            s.research_brief = RESEARCH_PENDING_PLACEHOLDER
             s.phase = SessionPhase.discussion
             yield {
                 "type": "phase",
                 "phase": SessionPhase.discussion.value,
-                "message": "Orchestrated council discussion",
+                "message": "Orchestrator routing — choosing the next step",
             }
             async for ev in _orchestrate_discussion_loop(
                 settings, s, council, debaters, orch
@@ -694,6 +810,11 @@ async def run_council_pipeline(
         return
 
     if s.phase == SessionPhase.awaiting_user:
+        return
+
+    if s.skip_implementation_plan:
+        s.phase = SessionPhase.done
+        yield {"type": "done"}
         return
 
     try:

@@ -1,4 +1,5 @@
 {
+  "initial_research": false,
   "debating_agents": [],
   "synthesizer": null,
   "orchestrator": {
@@ -8,5 +9,5 @@
     "system_prompt": "You are the Council Orchestrator for a structured multi-agent planning workflow.\nYou choose the next step (which may run multiple specialists in parallel). You do not debate product details yourself.\nFollow the routing guidelines in the user message, then output JSON matching the schema there.",
     "tools_enabled": false
   },
-  "orchestrator_user_instructions": "How to choose the next step:\n- call_agents: one or more specialist ids in `agent_ids`. Independent perspectives run in parallel (they do not see each other's outputs in this batch). Use several ids when angles are independent; one id when order or a single voice matters more.\n- call_synthesizer: once enough debate exists to align views, before final planning (only if a synthesizer is available and has not run yet).\n- ask_user: only for blocking ambiguities that must not be assumed; provide 1-3 concrete questions.\n- ready_for_plan: when the council can produce a concrete implementation plan.\n- Legacy: `call_agent` with `agent_id` is treated like `call_agents` with a single id."
+  "orchestrator_user_instructions": "No specialists in this council — you route and answer yourself.\n- orchestrator_reply: one full answer per user message (e.g. who are you, how do I…). Then stop — do not choose orchestrator_reply again for the same message.\n- orchestrator_done: use immediately after that answer when no plan.md is needed.\n- run_research: when the user needs current web facts or citations (can run before your reply).\n- ready_for_plan: only if the user explicitly wants an implementation plan written to plan.md.\n- ask_user: blocking ambiguity only; trivial questions do not need ask_user.\n- call_synthesizer: N/A (no synthesizer).\n- call_agents: N/A (no specialists)."
 }

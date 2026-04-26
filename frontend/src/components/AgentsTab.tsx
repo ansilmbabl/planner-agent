@@ -552,6 +552,9 @@ export function AgentsTab() {
         ...normalized,
         orchestrator_user_instructions:
           normalized.orchestrator_user_instructions?.trim() || undefined,
+        ...(normalized.initial_research === false
+          ? { initial_research: false }
+          : {}),
       }
       await putCouncil(toSave, councilId)
       setConfig(mergeCouncilDefaults(toSave))
@@ -838,6 +841,26 @@ export function AgentsTab() {
             guidelines and save to fall back to server defaults.
           </p>
         </div>
+        <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer max-w-3xl">
+          <input
+            type="checkbox"
+            className="mt-0.5 rounded border-slate-600 bg-slate-950 text-amber-500 focus:ring-amber-500/40"
+            checked={config.initial_research !== false}
+            onChange={(e) =>
+              setConfig((prev) =>
+                prev
+                  ? { ...prev, initial_research: e.target.checked }
+                  : prev
+              )
+            }
+          />
+            <span className="leading-relaxed">
+            <span className="text-slate-300 font-medium">Prefer web research</span> when it helps —
+            soft nudge in the orchestrator prompt to choose <code className="text-slate-600">run_research</code>{' '}
+            early for grounding. Uncheck to nudge minimal web use; the orchestrator still decides each step
+            (nothing runs before its first choice).
+          </span>
+        </label>
         <div className="grid sm:grid-cols-2 gap-3">
           <label className="block text-xs text-slate-400">
             Display name

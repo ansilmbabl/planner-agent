@@ -52,6 +52,8 @@ class CouncilSession:
     user_answered_clarification: bool = False
     synthesizer_ran: bool = False
     last_synth_summary: str = ""
+    """When True after orchestration, skip synthesizer + plan.md and end after chat."""
+    skip_implementation_plan: bool = False
 
 
 def new_session_id() -> str:
