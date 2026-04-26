@@ -27,7 +27,8 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
   return {
     ...c,
     initial_research: c.initial_research !== false,
-    synthesizer: c.synthesizer ?? defaultSynthesizer(),
+    /** Omit or null = no synthesizer step (backend skips call_synthesizer). */
+    synthesizer: c.synthesizer ?? null,
     orchestrator: c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT,
     orchestrator_user_instructions: c.orchestrator_user_instructions ?? '',
   }
@@ -107,7 +108,7 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
 
   return {
     debating_agents: debaters,
-    synthesizer: synthesizer ?? { ...DEFAULT_SYNTH },
+    synthesizer,
     ...(orchestrator ? { orchestrator } : {}),
     ...(orchestrator_user_instructions !== undefined
       ? { orchestrator_user_instructions }

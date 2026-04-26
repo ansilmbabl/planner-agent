@@ -137,29 +137,49 @@ function EdgeV() {
   )
 }
 
-/** Linear: 0..debateLen-1 = debaters, debateLen = synthesizer. */
-function toLinearPos(sel: Selection | null, debateLen: number): number {
-  if (debateLen < 1) return 0
-  if (!sel || sel.kind === 'synth') return debateLen
-  return Math.min(Math.max(0, sel.index), debateLen - 1)
+/** Count of selectable pipeline nodes (debaters + optional synthesizer slot). */
+function agentSpan(debateLen: number, hasSynth: boolean): number {
+  return debateLen + (hasSynth ? 1 : 0)
 }
 
-function fromLinearPos(n: number, debateLen: number): Selection {
-  if (debateLen < 1) return { kind: 'synth' }
-  const t = debateLen + 1
-  const k = ((n % t) + t) % t
-  if (k < debateLen) return { kind: 'debate', index: k }
-  return { kind: 'synth' }
+/** Linear: 0..debateLen-1 = debaters; debateLen = synthesizer when hasSynth. */
+function toLinearPos(
+  sel: Selection | null,
+  debateLen: number,
+  hasSynth: boolean
+): number {
+  const span = agentSpan(debateLen, hasSynth)
+  if (span < 1) return 0
+  if (hasSynth && (!sel || sel.kind === 'synth')) return debateLen
+  if (sel?.kind === 'debate') {
+    return Math.min(Math.max(0, sel.index), Math.max(0, debateLen - 1))
+  }
+  return 0
+}
+
+function fromLinearPos(
+  n: number,
+  debateLen: number,
+  hasSynth: boolean
+): Selection | null {
+  const span = agentSpan(debateLen, hasSynth)
+  if (span < 1) return null
+  const k = ((n % span) + span) % span
+  if (hasSynth && k === debateLen) return { kind: 'synth' }
+  if (debateLen < 1) return null
+  return { kind: 'debate', index: k }
 }
 
 function nextSelection(
   current: Selection | null,
   debateLen: number,
-  dir: 1 | -1
-): Selection {
-  if (debateLen < 1) return { kind: 'synth' }
-  const cur = toLinearPos(current, debateLen)
-  return fromLinearPos(cur + dir, debateLen)
+  dir: 1 | -1,
+  hasSynth: boolean
+): Selection | null {
+  const span = agentSpan(debateLen, hasSynth)
+  if (span < 1) return null
+  const cur = toLinearPos(current, debateLen, hasSynth)
+  return fromLinearPos(cur + dir, debateLen, hasSynth)
 }
 
 const NEW_COUNCIL_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
@@ -167,6 +187,74 @@ const NEW_COUNCIL_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 function isValidNewCouncilId(s: string) {
   const t = s.trim()
   return t.length > 0 && t.length <= 64 && NEW_COUNCIL_ID_RE.test(t)
+}
+
+function AgentSystemPromptCard({
+  roleLabel,
+  agent,
+  onChange,
+}: {
+  roleLabel: string
+  agent: AgentDef
+  onChange: (patch: Partial<AgentDef>) => void
+}) {
+  const sp = agent.system_prompt ?? ''
+  const lines = sp ? sp.split(/\r\n|\r|\n/).length : 0
+  const chars = sp.length
+  const copyPrompt = useCallback(() => {
+    if (!sp) return
+    void navigator.clipboard.writeText(sp)
+  }, [sp])
+
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-slate-950/35 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-400/90">
+            {roleLabel}
+          </span>
+          <h4 className="text-sm font-medium text-slate-100 mt-1">
+            {agent.name || agent.id}
+          </h4>
+          <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
+            {agent.id}
+            {agent.title ? ` · ${agent.title}` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={copyPrompt}
+          disabled={!sp}
+          className="shrink-0 text-xs font-medium text-violet-400 hover:text-violet-300 disabled:opacity-30"
+        >
+          Copy prompt
+        </button>
+      </div>
+      <label className="block text-xs text-slate-400">
+        System prompt
+        <textarea
+          className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-violet-500/40 min-h-[12rem] sm:min-h-[14rem]"
+          value={agent.system_prompt}
+          onChange={(e) => onChange({ system_prompt: e.target.value })}
+          spellCheck={false}
+        />
+      </label>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
+        <span>
+          {lines} line{lines === 1 ? '' : 's'} · {chars} chars
+        </span>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+        <input
+          type="checkbox"
+          className="rounded border-slate-600 bg-slate-950 text-violet-500 focus:ring-violet-500/40"
+          checked={agent.tools_enabled}
+          onChange={(e) => onChange({ tools_enabled: e.target.checked })}
+        />
+        Tools enabled (when the pipeline supports them)
+      </label>
+    </div>
+  )
 }
 
 export type AgentsTabMode = 'all' | 'agents' | 'prompts'
@@ -209,16 +297,17 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
     setConfig(next)
     setBaselineSig(configSignature(next))
     setSel((prev) => {
-      if (prev?.kind === 'synth') return { kind: 'synth' }
       if (
         prev?.kind === 'debate' &&
         prev.index < next.debating_agents.length
       ) {
         return prev
       }
-      return next.debating_agents.length
-        ? { kind: 'debate', index: 0 }
-        : { kind: 'synth' }
+      if (next.debating_agents.length) {
+        return { kind: 'debate', index: 0 }
+      }
+      if (next.synthesizer) return { kind: 'synth' }
+      return null
     })
     setEditorOpen(false)
   }, [])
@@ -442,6 +531,23 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
     })
   }, [])
 
+  const addSynthesizer = useCallback(() => {
+    setConfig((c) => {
+      if (!c || c.synthesizer) return c
+      return { ...c, synthesizer: defaultSynthesizer() }
+    })
+  }, [])
+
+  const addSynthesizerAndFocus = useCallback(() => {
+    setConfig((c) => {
+      if (!c || c.synthesizer) return c
+      return { ...c, synthesizer: defaultSynthesizer() }
+    })
+    setSel({ kind: 'synth' })
+    setSaved(false)
+    setEditorOpen(true)
+  }, [])
+
   const updateOrchestrator = useCallback((patch: Partial<AgentDef>) => {
     setConfig((c) => {
       if (!c) return c
@@ -504,7 +610,9 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
         const next = { ...c, debating_agents: list }
         queueMicrotask(() => {
           setSel((prev) => {
-            if (list.length === 0) return { kind: 'synth' }
+            if (list.length === 0) {
+              return next.synthesizer ? { kind: 'synth' } : null
+            }
             if (prev?.kind === 'debate') {
               if (prev.index === index) {
                 return {
@@ -553,7 +661,7 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
   )
 
   const save = useCallback(async () => {
-    if (!config?.synthesizer) return
+    if (!config) return
     setSaveError(null)
     setSaved(false)
     setSaving(true)
@@ -609,7 +717,6 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
             return
           }
         }
-        if (!parsed.synthesizer) parsed.synthesizer = defaultSynthesizer()
         const merged = mergeCouncilDefaults(parsed)
         setConfig(merged)
         setBaselineSig(configSignature(merged))
@@ -618,7 +725,9 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
         setSel(
           parsed.debating_agents.length
             ? { kind: 'debate', index: 0 }
-            : { kind: 'synth' }
+            : parsed.synthesizer
+              ? { kind: 'synth' }
+              : null
         )
         setEditorOpen(false)
       })
@@ -630,7 +739,8 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
     setSel((s) => {
       const c = configRef.current
       if (!c) return s
-      return nextSelection(s, c.debating_agents.length, dir)
+      const hasSynth = c.synthesizer != null
+      return nextSelection(s, c.debating_agents.length, dir, hasSynth)
     })
   }, [])
 
@@ -681,7 +791,8 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
   const selectedAgent = useMemo(() => {
     if (!config || !sel) return null
     if (sel.kind === 'synth') {
-      return { role: 'synth' as const, agent: config.synthesizer! }
+      if (!config.synthesizer) return null
+      return { role: 'synth' as const, agent: config.synthesizer }
     }
     const ag = config.debating_agents[sel.index]
     if (!ag) return null
@@ -703,7 +814,7 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
   }
 
   const debaters = config.debating_agents
-  const synth = config.synthesizer!
+  const synth = config.synthesizer
   const orch = mergeCouncilDefaults(config).orchestrator!
   const canRemoveDebate = debaters.length >= 1
 
@@ -739,26 +850,26 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
       {mode === 'all' && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
           The <span className="text-amber-200/90">Orchestrator</span> chooses each step (which
-          specialist, synthesizer, you, or finish). Below that, the{' '}
-          <span className="text-slate-200">row</span> is specialist order for reference; the{' '}
-          <span className="text-violet-300/90">Synthesizer</span> condenses debate before the plan
+          specialist, optional synthesizer, you, or finish). Below that, the{' '}
+          <span className="text-slate-200">row</span> is specialist order for reference; an optional{' '}
+          <span className="text-violet-300/90">Synthesizer</span> can align debate before the plan
           writer. Profiles live under{' '}
           <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
         </p>
       )}
       {mode === 'prompts' && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          <span className="text-amber-200/90 font-medium">Orchestrator prompts</span> for the
-          selected council: system role and routing guidelines (user message). Action JSON schema is
-          defined in{' '}
-          <code className="text-slate-500">backend/app/prompts/orchestrator.py</code>. Save applies
-          to <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+          <span className="text-amber-200/90 font-medium">Prompt engineering</span> for the
+          selected council: orchestrator (routing), specialists, and an optional synthesizer.
+          Action JSON schema is in{' '}
+          <code className="text-slate-500">backend/app/prompts/orchestrator.py</code>. Save writes{' '}
+          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
         </p>
       )}
       {mode === 'agents' && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          <span className="text-violet-300/90 font-medium">Specialists &amp; synthesizer</span> for
-          the selected council — order, prompts, and tools. For orchestrator text use the{' '}
+          <span className="text-violet-300/90 font-medium">Specialists &amp; optional synthesizer</span>{' '}
+          for the selected council — order, prompts, and tools. For orchestrator text use the{' '}
           <span className="text-slate-300">Prompts</span> tab. Files live under{' '}
           <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
         </p>
@@ -952,13 +1063,67 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
       )}
 
       {mode === 'prompts' && (
-        <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4 sm:p-5 max-w-5xl">
-          {saveToServerRow}
+        <div className="space-y-4 max-w-5xl">
+          <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/25 to-slate-950/50 p-4 sm:p-5 space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-violet-200/95">
+                Specialist &amp; optional synthesizer prompts
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed max-w-2xl">
+                System prompts for each role. Reorder, add, or remove agents in the{' '}
+                <span className="text-slate-400">Council agents</span> tab.
+              </p>
+            </div>
+            {debaters.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-slate-500">
+                No debating agents yet. Add them under{' '}
+                <span className="text-slate-300">Council agents</span>, then edit their prompts here.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {debaters.map((ag, i) => (
+                  <AgentSystemPromptCard
+                    key={ag.id}
+                    roleLabel={`Specialist ${i + 1}`}
+                    agent={ag}
+                    onChange={(p) => updateDebater(i, p)}
+                  />
+                ))}
+              </div>
+            )}
+            {synth ? (
+              <AgentSystemPromptCard
+                roleLabel="Synthesizer"
+                agent={synth}
+                onChange={updateSynth}
+              />
+            ) : (
+              <div className="rounded-xl border border-dashed border-violet-500/25 bg-black/20 px-4 py-6 space-y-3">
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  No synthesizer on this council. The orchestrator will not offer{' '}
+                  <code className="text-slate-500">call_synthesizer</code>; debate goes straight to
+                  planning (with a short placeholder summary in the plan step). Add one if you want
+                  a dedicated “align tensions” pass before <code className="text-slate-500">plan.md</code>.
+                </p>
+                <button
+                  type="button"
+                  onClick={addSynthesizer}
+                  className="text-sm font-medium text-violet-400 hover:text-violet-300"
+                >
+                  + Add synthesizer
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4 sm:p-5">
+            {saveToServerRow}
+          </div>
         </div>
       )}
 
-        {/* Graph — full width so the page does not feel cramped */}
+      {/* Graph — full width so the page does not feel cramped */}
       {showAgents && (
+        <>
         <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-slate-900/50 to-slate-950/60 p-4 sm:p-5 overflow-x-auto max-w-5xl">
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <div className="text-[10px] uppercase tracking-widest text-slate-500">
@@ -1019,22 +1184,38 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
             <div className="flex justify-center my-1">
               <EdgeV />
             </div>
-            <p className="text-center text-[9px] text-slate-500 -mt-0.5 mb-1">merge & align</p>
+            <p className="text-center text-[9px] text-slate-500 -mt-0.5 mb-1">
+              {synth ? 'merge & align' : 'optional merge'}
+            </p>
 
             <div className="flex justify-center">
-              <GraphNode
-                label={synth.name}
-                subtitle={synth.title}
-                id={synth.id}
-                tools={synth.tools_enabled}
-                variant="synth"
-                selected={sel?.kind === 'synth'}
-                onSelect={() => {
-                  setSel({ kind: 'synth' })
-                  setSaved(false)
-                  setEditorOpen(true)
-                }}
-              />
+              {synth ? (
+                <GraphNode
+                  label={synth.name}
+                  subtitle={synth.title}
+                  id={synth.id}
+                  tools={synth.tools_enabled}
+                  variant="synth"
+                  selected={sel?.kind === 'synth'}
+                  onSelect={() => {
+                    setSel({ kind: 'synth' })
+                    setSaved(false)
+                    setEditorOpen(true)
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={addSynthesizerAndFocus}
+                  className="rounded-xl border border-dashed border-violet-500/35 bg-violet-950/15 px-4 py-6 text-center text-sm text-violet-200/90 hover:bg-violet-950/25 max-w-sm"
+                >
+                  <span className="font-medium">+ Add synthesizer</span>
+                  <span className="block text-[11px] text-slate-500 mt-2 leading-relaxed font-normal">
+                    Optional step: condense specialist debate before the planner. Skip if you want a
+                    slimmer pipeline.
+                  </span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1049,6 +1230,7 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
         <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4 sm:p-5 max-w-5xl">
           {saveToServerRow}
         </div>
+        </>
       )}
 
         {showAgents && editorOpen &&
