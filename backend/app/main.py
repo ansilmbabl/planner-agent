@@ -25,6 +25,7 @@ from .councils import (
 from .config import get_settings
 from .llm import ollama_list_models, ollama_reachable
 from .orchestrator import run_council_pipeline
+from .plan_refine import run_plan_refine
 from .session import CouncilSession, SessionPhase
 from .db import make_engine
 from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
@@ -84,6 +85,19 @@ class PostMessageBody(BaseModel):
     model: str | None = None
 
 
+class RefinePlanBody(BaseModel):
+    instruction: str = Field(..., min_length=1, description="What to change or improve in the plan")
+    selection: str | None = Field(
+        default=None,
+        description="Optional excerpt from the plan to focus edits on",
+    )
+    agent_ids: list[str] = Field(
+        default_factory=list,
+        description='Ids to draw system prompts from: "orchestrator", debater ids, "synthesizer"',
+    )
+    model: str | None = None
+
+
 class PatchSessionBody(BaseModel):
     council_id: str = Field(
         ...,
@@ -101,9 +115,9 @@ def _require_council_for_id(council_id: str) -> CouncilConfigFile:
         raise HTTPException(500, f"Invalid council config: {e}") from e
 
 
-async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> str:
+async def _resolve_session_model_any(s: CouncilSession, model: str | None) -> str:
     settings = get_settings()
-    m = (body.model or s.model or "").strip()
+    m = (model or s.model or "").strip()
     if m:
         s.model = m
         return m
@@ -115,6 +129,10 @@ async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> st
     else:
         s.model = settings.anthropic_model
     return s.model
+
+
+async def _resolve_session_model(s: CouncilSession, body: PostMessageBody) -> str:
+    return await _resolve_session_model_any(s, body.model)
 
 
 @app.get("/api/councils", response_model=None)
@@ -412,6 +430,57 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
     async def gen() -> Any:
         try:
             async for ev in run_council_pipeline(settings, store, sess, content, c):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            try:
+                store.save(sess)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Could not persist session: %s", e)
+        yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8")
+
+
+@app.post("/api/sessions/{session_id}/refine-plan", response_class=StreamingResponse)
+async def refine_plan_stream(session_id: str, body: RefinePlanBody) -> StreamingResponse:
+    settings = get_settings()
+    instruction = (body.instruction or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+    sess = store.get(session_id)
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    if sess.phase != SessionPhase.done:
+        raise HTTPException(
+            409,
+            f"Plan refine runs only after a completed council (phase is {sess.phase.value}, expected done).",
+        )
+    if not (sess.plan_markdown or "").strip():
+        raise HTTPException(400, "No plan content to refine")
+    c = _require_council_for_id(
+        (getattr(sess, "council_id", None) or "default").strip() or "default"
+    )
+    model = await _resolve_session_model_any(sess, body.model)
+    if not model:
+        raise HTTPException(400, "Model name required for this session")
+
+    selection = (body.selection or "").strip() or None
+    agent_ids = [str(x).strip() for x in (body.agent_ids or []) if str(x).strip()]
+
+    async def gen() -> Any:
+        try:
+            async for ev in run_plan_refine(
+                settings,
+                store,
+                sess,
+                c,
+                instruction=instruction,
+                selection=selection,
+                agent_ids=agent_ids,
+                model=model,
+            ):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

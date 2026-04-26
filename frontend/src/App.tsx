@@ -9,18 +9,22 @@ import {
 import {
   createSession,
   deleteSessionApi,
+  getCouncil,
   getHealth,
   getModels,
   getSession,
   listCouncils,
   listSessions,
   patchSessionCouncil,
+  type CouncilConfig,
   type HealthResponse,
   type SessionListItem,
   type SessionMessage,
   type SseEvent,
+  streamRefinePlan,
   streamUserMessage,
 } from './api'
+import { mergeCouncilDefaults } from './agentsConfigUtils'
 import { MessageMarkdown } from './components/MessageMarkdown'
 import { SettingsPanel } from './components/SettingsPanel'
 
@@ -168,8 +172,9 @@ function eventLabel(ev: SseEvent): {
     return {
       kind: 'phase',
       lane: 'process',
-      title: 'Run finished',
-      body: 'You can send another message or start a new chat.',
+      title: 'Ready',
+      body:
+        'You can refine the plan (Plan tab), send a new message to start a fresh council run, or open a new chat.',
     }
   }
   return {
@@ -213,6 +218,29 @@ function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
     const an = String(m.agent_name || '').trim()
     const action =
       m.meta && typeof m.meta.action === 'string' ? m.meta.action : ''
+    const metaKind =
+      m.meta && typeof (m.meta as { kind?: unknown }).kind === 'string'
+        ? String((m.meta as { kind: string }).kind)
+        : ''
+
+    if (metaKind === 'plan_refine_request') {
+      return {
+        id,
+        lane: 'chat',
+        kind: 'text',
+        title: 'You · refine plan',
+        body: m.content,
+      }
+    }
+    if (metaKind === 'plan_refine' || aid === 'plan_refine') {
+      return {
+        id,
+        lane: 'chat',
+        kind: 'text',
+        title: an || 'Plan refine',
+        body: m.content,
+      }
+    }
 
     if (aid === 'system' && (an === 'Research' || an.toLowerCase() === 'research')) {
       return {
@@ -382,8 +410,13 @@ export default function App() {
   } | null>(null)
   /** Routing / research / specialists — separate from chat bubbles */
   const [showProcessDetail, setShowProcessDetail] = useState(false)
+  const [councilDetail, setCouncilDetail] = useState<CouncilConfig | null>(null)
+  const [refineInstruction, setRefineInstruction] = useState('')
+  const [refineSelection, setRefineSelection] = useState('')
+  const [refineAgentIds, setRefineAgentIds] = useState<string[]>(['orchestrator'])
 
   const streamAbort = useRef<AbortController | null>(null)
+  const planPreviewRef = useRef<HTMLDivElement | null>(null)
   /** Session id for the in-flight /api/.../message stream (if any). */
   const streamOwnerSessionIdRef = useRef<string | null>(null)
   /** Synced to sessionId so event handlers can compare without stale closures. */
@@ -394,6 +427,42 @@ export default function App() {
   useEffect(() => {
     viewingSessionIdRef.current = sessionId
   }, [sessionId])
+
+  useEffect(() => {
+    setRefineInstruction('')
+    setRefineSelection('')
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!sessionCouncilId) {
+      setCouncilDetail(null)
+      return
+    }
+    let live = true
+    void getCouncil(sessionCouncilId)
+      .then((raw) => {
+        if (!live) return
+        const merged = mergeCouncilDefaults(raw)
+        setCouncilDetail(merged)
+        const orchId = merged.orchestrator?.id
+        const allowed = new Set<string>([
+          ...(merged.orchestrator ? [merged.orchestrator.id] : []),
+          ...merged.debating_agents.map((d) => d.id),
+          ...(merged.synthesizer ? [merged.synthesizer.id] : []),
+        ])
+        setRefineAgentIds((prev) => {
+          const next = prev.filter((id) => allowed.has(id))
+          if (next.length) return next
+          return orchId ? [orchId] : []
+        })
+      })
+      .catch(() => {
+        if (live) setCouncilDetail(null)
+      })
+    return () => {
+      live = false
+    }
+  }, [sessionCouncilId])
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -654,9 +723,130 @@ export default function App() {
     }
   }
 
+  const toggleRefineAgent = useCallback((id: string) => {
+    setRefineAgentIds((prev) => {
+      if (prev.includes(id)) {
+        if (prev.length <= 1) return prev
+        return prev.filter((x) => x !== id)
+      }
+      return [...prev, id]
+    })
+  }, [])
+
+  const capturePlanSelection = useCallback(() => {
+    const el = planPreviewRef.current
+    let t = ''
+    const sel = typeof window !== 'undefined' ? window.getSelection() : null
+    if (sel && el && sel.anchorNode && el.contains(sel.anchorNode)) {
+      t = (sel.toString() || '').trim()
+    } else if (sel) {
+      t = (sel.toString() || '').trim()
+    }
+    if (t) setRefineSelection(t)
+  }, [])
+
+  async function onRefinePlan() {
+    const inst = refineInstruction.trim()
+    if (!inst || busy || !sessionId) return
+    if (!model.trim()) {
+      setModelHint('Select a model from the list.')
+      return
+    }
+    setBusy(true)
+    const ac = new AbortController()
+    streamAbort.current = ac
+    streamOwnerSessionIdRef.current = sessionId
+    try {
+      const selEx = refineSelection.trim()
+      const bodyPreview =
+        inst +
+        (selEx
+          ? `\n\n_Excerpt:_\n${selEx.length > 400 ? `${selEx.slice(0, 397)}…` : selEx}`
+          : '')
+      setFeed((f) => [
+        ...f,
+        {
+          id: simpleId(),
+          lane: 'chat',
+          kind: 'text',
+          title: 'You · refine plan',
+          body: bodyPreview,
+        },
+      ])
+      for await (const ev of streamRefinePlan(
+        sessionId,
+        {
+          instruction: inst,
+          selection: selEx || undefined,
+          agent_ids: refineAgentIds.length ? refineAgentIds : undefined,
+          model,
+        },
+        ac.signal
+      )) {
+        if ((ev as { type?: string }).type === 'error') {
+          if (applyStreamToUi()) {
+            setFeed((f) => [
+              ...f,
+              {
+                id: simpleId(),
+                lane: 'chat',
+                kind: 'err',
+                title: 'Refine failed',
+                body: (ev as { message: string }).message,
+              },
+            ])
+          }
+          break
+        }
+        pushFeed(ev)
+      }
+      setRefineInstruction('')
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        if (applyStreamToUi()) {
+          setFeed((f) => [
+            ...f,
+            {
+              id: simpleId(),
+              lane: 'chat',
+              kind: 'err',
+              title: 'Stopped',
+              body: 'Cancelled.',
+            },
+          ])
+        }
+      } else if (applyStreamToUi()) {
+        setFeed((f) => [
+          ...f,
+          {
+            id: simpleId(),
+            lane: 'chat',
+            kind: 'err',
+            title: 'Refine failed',
+            body: e instanceof Error ? e.message : String(e),
+          },
+        ])
+      }
+    } finally {
+      streamAbort.current = null
+      streamOwnerSessionIdRef.current = null
+      setBusy(false)
+      void loadSessionList()
+    }
+  }
+
   async function onSend() {
     const text = input.trim()
     if (!text || busy) return
+    if (
+      phase === 'done' &&
+      planMd.trim() &&
+      !window.confirm(
+        'A new chat message starts a fresh council run and clears this session’s plan and research. For targeted edits, use **Refine plan** in the Plan tab. Continue with a new run?'
+      )
+    ) {
+      return
+    }
     if (!model.trim()) {
       setModelHint('Select a model from the list.')
       return
@@ -1507,7 +1697,10 @@ export default function App() {
                   )}
                 </div>
                 {planMd ? (
-                  <div className="max-h-[min(36dvh,16rem)] lg:max-h-[min(60vh,28rem)] overflow-y-auto rounded-xl border border-white/[0.08] bg-black/25 p-3">
+                  <div
+                    ref={planPreviewRef}
+                    className="max-h-[min(36dvh,16rem)] lg:max-h-[min(60vh,28rem)] overflow-y-auto rounded-xl border border-white/[0.08] bg-black/25 p-3 select-text cursor-text"
+                  >
                     <MessageMarkdown text={planMd} size="panel" />
                   </div>
                 ) : (
@@ -1515,6 +1708,121 @@ export default function App() {
                     <p className="text-sm text-slate-500 leading-relaxed">
                       Plan appears here when the run reaches the planning step.
                     </p>
+                  </div>
+                )}
+                {planMd.trim() && phase === 'done' && sessionId && (
+                  <div className="mt-4 rounded-xl border border-violet-500/20 bg-violet-950/15 p-3 sm:p-4 space-y-3">
+                    <div>
+                      <h4 className="text-xs font-semibold text-violet-200/95 uppercase tracking-wide">
+                        Refine with LLM
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                        Select text in the preview above (optional), capture it, then describe changes.
+                        Choose which council personas supply the system prompt — their instructions are
+                        merged for this edit only.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={capturePlanSelection}
+                        className="text-xs font-medium rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-slate-200 hover:bg-white/[0.07]"
+                      >
+                        Capture selection
+                      </button>
+                      {refineSelection.trim() ? (
+                        <span className="text-[10px] text-emerald-400/90 self-center">
+                          Excerpt captured ({refineSelection.trim().length} chars)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-500 self-center">
+                          No excerpt — whole plan is in context
+                        </span>
+                      )}
+                    </div>
+                    <label className="block text-[11px] text-slate-400">
+                      Excerpt (edit or paste)
+                      <textarea
+                        className="mt-1 w-full rounded-lg border border-slate-600/60 bg-slate-950/80 px-2 py-1.5 text-xs text-slate-100 font-mono min-h-[4rem] focus:outline-none focus:ring-1 focus:ring-violet-500/40"
+                        value={refineSelection}
+                        onChange={(e) => setRefineSelection(e.target.value)}
+                        spellCheck={false}
+                        placeholder="Optional — leave empty to refine the full document from your instruction alone."
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-400">
+                      Instruction
+                      <textarea
+                        className="mt-1 w-full rounded-lg border border-slate-600/60 bg-slate-950/80 px-2 py-1.5 text-sm text-slate-100 min-h-[5rem] focus:outline-none focus:ring-1 focus:ring-violet-500/40"
+                        value={refineInstruction}
+                        onChange={(e) => setRefineInstruction(e.target.value)}
+                        placeholder="e.g. Tighten the testing section, add Redis to the stack table, remove the mermaid diagram under Key flows."
+                      />
+                    </label>
+                    {councilDetail ? (
+                      <fieldset className="space-y-2">
+                        <legend className="text-[11px] text-slate-500">Personas (system prompts)</legend>
+                        <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-slate-300">
+                          {councilDetail.orchestrator ? (
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="rounded border-slate-600"
+                                checked={refineAgentIds.includes(councilDetail.orchestrator.id)}
+                                onChange={() =>
+                                  toggleRefineAgent(councilDetail.orchestrator!.id)
+                                }
+                              />
+                              {councilDetail.orchestrator.name}
+                              <span className="text-slate-500 font-mono text-[10px]">
+                                {councilDetail.orchestrator.id}
+                              </span>
+                            </label>
+                          ) : null}
+                          {councilDetail.debating_agents.map((ag) => (
+                            <label
+                              key={ag.id}
+                              className="flex items-center gap-2 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                className="rounded border-slate-600"
+                                checked={refineAgentIds.includes(ag.id)}
+                                onChange={() => toggleRefineAgent(ag.id)}
+                              />
+                              {ag.name}
+                              <span className="text-slate-500 font-mono text-[10px]">{ag.id}</span>
+                            </label>
+                          ))}
+                          {councilDetail.synthesizer ? (
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="rounded border-slate-600"
+                                checked={refineAgentIds.includes(councilDetail.synthesizer.id)}
+                                onChange={() =>
+                                  toggleRefineAgent(councilDetail.synthesizer!.id)
+                                }
+                              />
+                              {councilDetail.synthesizer.name}
+                              <span className="text-slate-500 font-mono text-[10px]">
+                                {councilDetail.synthesizer.id}
+                              </span>
+                            </label>
+                          ) : null}
+                        </div>
+                      </fieldset>
+                    ) : (
+                      <p className="text-[11px] text-slate-500">Loading council roster…</p>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy || !refineInstruction.trim()}
+                      onClick={() => void onRefinePlan()}
+                      className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-4 py-2 text-sm font-medium text-white"
+                    >
+                      {busy ? 'Working…' : 'Apply refinement'}
+                    </button>
                   </div>
                 )}
               </div>

@@ -250,6 +250,66 @@ export async function deleteSessionApi(sessionId: string): Promise<void> {
   if (!r.ok) throw new Error(`delete: ${r.status}`)
 }
 
+export type RefinePlanPayload = {
+  instruction: string
+  selection?: string
+  agent_ids?: string[]
+  model?: string
+}
+
+export async function* streamRefinePlan(
+  sessionId: string,
+  body: RefinePlanPayload,
+  signal?: AbortSignal
+): AsyncGenerator<SseEvent, void, unknown> {
+  const r = await fetch(
+    `${API}/sessions/${encodeURIComponent(sessionId)}/refine-plan`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instruction: body.instruction,
+        ...(body.selection?.trim()
+          ? { selection: body.selection.trim() }
+          : {}),
+        ...(body.agent_ids?.length ? { agent_ids: body.agent_ids } : {}),
+        ...(body.model?.trim() ? { model: body.model.trim() } : {}),
+      }),
+      signal,
+    }
+  )
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `HTTP ${r.status}`)
+  }
+  const bodyStream = r.body
+  if (!bodyStream) {
+    return
+  }
+  const reader = bodyStream.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const blocks = buf.split('\n\n')
+    buf = blocks.pop() ?? ''
+    for (const b of blocks) {
+      if (!b.trim()) continue
+      const m = b.match(/^data: (.+)$/ms)
+      if (m) {
+        try {
+          const ev = JSON.parse(m[1]!) as SseEvent
+          yield ev
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+}
+
 export async function* streamUserMessage(
   sessionId: string,
   content: string,
