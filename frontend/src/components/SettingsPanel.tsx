@@ -12,7 +12,7 @@ type SettingsPanelProps = {
   onOpenSidebar?: () => void
 }
 
-type SettingsTab = 'connection' | 'agents'
+type SettingsTab = 'connection' | 'prompts' | 'agents'
 
 export function SettingsPanel({
   health,
@@ -24,6 +24,7 @@ export function SettingsPanel({
   onOpenSidebar,
 }: SettingsPanelProps) {
   const [tab, setTab] = useState<SettingsTab>('connection')
+  const councilSettingsTab = tab === 'prompts' ? 'prompts' : 'agents'
   const oll = health?.ollama
   const ollamaOk = oll?.reachable && (oll.model_count ?? 0) > 0
 
@@ -50,7 +51,7 @@ export function SettingsPanel({
           <h2 className="text-base font-semibold text-slate-100">Settings</h2>
         </div>
         <div
-          className="mt-4 flex gap-1 p-1 rounded-xl bg-slate-900/60 border border-white/[0.06] w-full max-w-md"
+          className="mt-4 flex flex-col sm:flex-row gap-1 p-1 rounded-xl bg-slate-900/60 border border-white/[0.06] w-full max-w-2xl"
           role="tablist"
           aria-label="Settings section"
         >
@@ -70,6 +71,19 @@ export function SettingsPanel({
           <button
             type="button"
             role="tab"
+            aria-selected={tab === 'prompts'}
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'prompts'
+                ? 'bg-violet-500/20 text-violet-50 shadow-sm'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+            onClick={() => setTab('prompts')}
+          >
+            Prompts
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={tab === 'agents'}
             className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === 'agents'
@@ -85,7 +99,7 @@ export function SettingsPanel({
 
       <div
         className={`flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-6 w-full mx-auto ${
-          tab === 'agents' ? 'max-w-6xl' : 'max-w-md'
+          tab === 'connection' ? 'max-w-md' : 'max-w-6xl'
         }`}
       >
         {tab === 'connection' && (
@@ -144,7 +158,9 @@ export function SettingsPanel({
           </section>
         )}
 
-        {tab === 'agents' && <AgentsTab />}
+        {tab !== 'connection' && (
+          <AgentsTab mode={councilSettingsTab} />
+        )}
       </div>
     </div>
   )

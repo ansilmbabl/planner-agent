@@ -169,7 +169,18 @@ function isValidNewCouncilId(s: string) {
   return t.length > 0 && t.length <= 64 && NEW_COUNCIL_ID_RE.test(t)
 }
 
-export function AgentsTab() {
+export type AgentsTabMode = 'all' | 'agents' | 'prompts'
+
+type AgentsTabProps = {
+  /**
+   * `all` — orchestrator prompts + pipeline (legacy single page).
+   * `prompts` — orchestrator & routing text only (Settings → Prompts).
+   * `agents` — debaters, synthesizer, graph (Settings → Council agents).
+   */
+  mode?: AgentsTabMode
+}
+
+export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
   const [councilId, setCouncilId] = useState('default')
   const [councilIds, setCouncilIds] = useState<string[]>(['default'])
   const [config, setConfig] = useState<CouncilConfig | null>(null)
@@ -637,6 +648,7 @@ export function AgentsTab() {
         setEditorOpen(false)
         return
       }
+      if (mode === 'prompts') return
       if (e.target && (e.target as HTMLElement).closest('textarea, input')) {
         if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
           e.preventDefault()
@@ -655,7 +667,7 @@ export function AgentsTab() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onNavAgent, editorOpen, createOpen])
+  }, [onNavAgent, editorOpen, createOpen, mode])
 
   useEffect(() => {
     if (!editorOpen && !createOpen) return
@@ -719,15 +731,38 @@ export function AgentsTab() {
     </div>
   )
 
+  const showPrompts = mode === 'all' || mode === 'prompts'
+  const showAgents = mode === 'all' || mode === 'agents'
+
   return (
     <div className="space-y-4 pb-8">
-      <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-        The <span className="text-amber-200/90">Orchestrator</span> chooses each step (which
-        specialist, synthesizer, you, or finish). Below that, the <span className="text-slate-200">row</span>{' '}
-        is specialist order for reference; the <span className="text-violet-300/90">Synthesizer</span>{' '}
-        condenses debate before the plan writer. Profiles live under{' '}
-        <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
-      </p>
+      {mode === 'all' && (
+        <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
+          The <span className="text-amber-200/90">Orchestrator</span> chooses each step (which
+          specialist, synthesizer, you, or finish). Below that, the{' '}
+          <span className="text-slate-200">row</span> is specialist order for reference; the{' '}
+          <span className="text-violet-300/90">Synthesizer</span> condenses debate before the plan
+          writer. Profiles live under{' '}
+          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+        </p>
+      )}
+      {mode === 'prompts' && (
+        <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
+          <span className="text-amber-200/90 font-medium">Orchestrator prompts</span> for the
+          selected council: system role and routing guidelines (user message). Action JSON schema is
+          defined in{' '}
+          <code className="text-slate-500">backend/app/prompts/orchestrator.py</code>. Save applies
+          to <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+        </p>
+      )}
+      {mode === 'agents' && (
+        <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
+          <span className="text-violet-300/90 font-medium">Specialists &amp; synthesizer</span> for
+          the selected council — order, prompts, and tools. For orchestrator text use the{' '}
+          <span className="text-slate-300">Prompts</span> tab. Files live under{' '}
+          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+        </p>
+      )}
 
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 rounded-xl border border-white/[0.08] bg-slate-900/30 px-3 py-2.5">
         <label className="flex items-center gap-2 text-xs text-slate-400 shrink-0 min-w-0 max-w-full sm:max-w-[12rem]">
@@ -823,15 +858,20 @@ export function AgentsTab() {
         </div>
       </div>
 
-      <p className="text-[11px] text-slate-500">
-        Tip: <kbd className="kbd-hint">Alt</kbd> + <kbd className="kbd-hint">↑</kbd> /{' '}
-        <kbd className="kbd-hint">↓</kbd> to change selection; click a node to open the editor.{' '}
-        <kbd className="kbd-hint">Esc</kbd> closes the editor.
-      </p>
+      {showAgents && (
+        <p className="text-[11px] text-slate-500">
+          Tip: <kbd className="kbd-hint">Alt</kbd> + <kbd className="kbd-hint">↑</kbd> /{' '}
+          <kbd className="kbd-hint">↓</kbd> to change selection; click a node to open the editor.{' '}
+          <kbd className="kbd-hint">Esc</kbd> closes the editor.
+        </p>
+      )}
 
+      {showPrompts && (
       <div className="rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/25 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-3">
         <div>
-          <h3 className="text-sm font-semibold text-amber-200/95">Orchestrator routing</h3>
+          <h3 className="text-sm font-semibold text-amber-200/95">
+            {mode === 'prompts' ? 'Orchestrator prompts' : 'Orchestrator routing'}
+          </h3>
           <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
             <span className="text-slate-400">System prompt</span> is the orchestrator&apos;s role
             (sent as the system message).{' '}
@@ -909,8 +949,16 @@ export function AgentsTab() {
           />
         </label>
       </div>
+      )}
+
+      {mode === 'prompts' && (
+        <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4 sm:p-5 max-w-5xl">
+          {saveToServerRow}
+        </div>
+      )}
 
         {/* Graph — full width so the page does not feel cramped */}
+      {showAgents && (
         <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-slate-900/50 to-slate-950/60 p-4 sm:p-5 overflow-x-auto max-w-5xl">
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <div className="text-[10px] uppercase tracking-widest text-slate-500">
@@ -1001,8 +1049,9 @@ export function AgentsTab() {
         <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4 sm:p-5 max-w-5xl">
           {saveToServerRow}
         </div>
+      )}
 
-        {editorOpen &&
+        {showAgents && editorOpen &&
           selectedAgent &&
           createPortal(
             <div
