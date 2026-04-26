@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     research_max_queries: int = 3
     discussion_rounds: int = 2
     orchestration_max_steps: int = 24
+    orchestration_max_parallel_agents: int = 6
     max_url_fetch_bytes: int = 200_000
     url_fetch_timeout_s: float = 15.0
     request_timeout_s: float = 120.0

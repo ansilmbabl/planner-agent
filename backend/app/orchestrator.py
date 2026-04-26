@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from typing import Any
@@ -63,16 +64,24 @@ def _pick_least_called_debater(debaters: list[AgentDef], agent_turns: list[dict[
 
 def _normalize_orch_decision(
     data: dict[str, Any],
-    debater_ids: set[str],
+    debaters: list[AgentDef],
+    agent_turns: list[dict[str, Any]],
     synth_available: bool,
     synth_done: bool,
-) -> tuple[str, str | None, list[str], str]:
+    max_parallel: int,
+) -> tuple[str, list[str], list[str], str]:
+    debater_ids = {a.id for a in debaters}
+    cap = max(1, min(max_parallel, len(debaters) or 1))
     reason = str(data.get("reason", "")).strip() or "(no reason)"
     raw = str(data.get("action", "")).strip().lower().replace("-", "_")
     aliases = {
-        "callagent": "call_agent",
-        "invoke_agent": "call_agent",
-        "agent": "call_agent",
+        "callagent": "call_agents",
+        "call_agent": "call_agents",
+        "invoke_agent": "call_agents",
+        "agent": "call_agents",
+        "callagents": "call_agents",
+        "parallel": "call_agents",
+        "parallel_agents": "call_agents",
         "synthesizer": "call_synthesizer",
         "synth": "call_synthesizer",
         "merge": "call_synthesizer",
@@ -86,12 +95,9 @@ def _normalize_orch_decision(
         "write_plan": "ready_for_plan",
     }
     action = aliases.get(raw, raw)
-    agent_id = data.get("agent_id")
-    aid: str | None
-    if agent_id is None or not str(agent_id).strip():
-        aid = None
-    else:
-        aid = str(agent_id).strip()
+    if action == "call_agent":
+        action = "call_agents"
+
     qs_raw = data.get("questions")
     questions: list[str] = []
     if isinstance(qs_raw, list):
@@ -99,22 +105,43 @@ def _normalize_orch_decision(
     elif qs_raw is not None and str(qs_raw).strip():
         questions = [str(qs_raw).strip()]
 
-    if action not in ("call_agent", "call_synthesizer", "ask_user", "ready_for_plan"):
-        action = "call_agent"
-        aid = None
+    agent_ids_out: list[str] = []
+    seen_ids: set[str] = set()
+    raw_ids = data.get("agent_ids")
+    if isinstance(raw_ids, list):
+        for x in raw_ids:
+            s = str(x).strip()
+            if s in debater_ids and s not in seen_ids:
+                seen_ids.add(s)
+                agent_ids_out.append(s)
+    agent_id = data.get("agent_id")
+    if agent_id is not None and str(agent_id).strip():
+        aid = str(agent_id).strip()
+        if aid in debater_ids and aid not in seen_ids:
+            seen_ids.add(aid)
+            agent_ids_out.append(aid)
+    agent_ids_out = agent_ids_out[:cap]
+
+    if action not in ("call_agents", "call_synthesizer", "ask_user", "ready_for_plan"):
+        action = "call_agents"
+        agent_ids_out = []
     if action == "call_synthesizer" and not synth_available:
-        action = "call_agent"
-        aid = None
+        action = "call_agents"
+        agent_ids_out = []
     if action == "call_synthesizer" and synth_done:
         action = "ready_for_plan"
-        aid = None
-    if action == "call_agent" and aid is not None and aid not in debater_ids:
-        aid = None
+        agent_ids_out = []
     if action == "ask_user" and not questions:
         questions = [
             "What is the most important constraint or scope decision we should lock before planning?"
         ]
-    return action, aid, questions, reason
+
+    if action in ("ask_user", "ready_for_plan", "call_synthesizer"):
+        agent_ids_out = []
+    elif action == "call_agents" and not agent_ids_out:
+        agent_ids_out = [_pick_least_called_debater(debaters, agent_turns).id]
+
+    return action, agent_ids_out, questions, reason
 
 
 async def _orchestrator_decide(
@@ -390,7 +417,6 @@ async def _orchestrate_discussion_loop(
     *,
     extra_transcript_prefix: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
-    debater_ids = {a.id for a in debaters}
     max_steps = max(6, settings.orchestration_max_steps)
     recent_keys: list[str] = []
 
@@ -422,26 +448,28 @@ async def _orchestrate_discussion_loop(
             max_steps,
             council,
         )
-        action, agent_id, questions, reason = _normalize_orch_decision(
+        action, agent_ids, questions, reason = _normalize_orch_decision(
             raw,
-            debater_ids,
+            debaters,
+            s.agent_turns,
             council.synthesizer is not None,
             s.synthesizer_ran,
+            settings.orchestration_max_parallel_agents,
         )
-        key = f"{action}:{agent_id or ''}"
+        key = f"{action}:{','.join(sorted(agent_ids))}"
         recent_keys.append(key)
         if len(recent_keys) > 12:
             recent_keys.pop(0)
         if len(recent_keys) >= 6 and len(set(recent_keys[-6:])) == 1:
             action = "ready_for_plan"
-            agent_id = None
+            agent_ids = []
             reason = "(auto: breaking decision loop)"
 
         yield {
             "type": "orchestrator",
             "action": action,
             "reason": reason,
-            "agent_id": agent_id,
+            "agent_ids": agent_ids,
             "step": step_n,
         }
 
@@ -476,56 +504,62 @@ async def _orchestrate_discussion_loop(
                 yield ev
             continue
 
-        if action == "call_agent":
-            ag = (
-                _debater_by_id(debaters, agent_id)
-                if agent_id
-                else _pick_least_called_debater(debaters, s.agent_turns)
-            )
+        if action == "call_agents":
+            agents_to_run = [
+                ag for i in agent_ids if (ag := _debater_by_id(debaters, i)) is not None
+            ]
+            if not agents_to_run:
+                continue
             s.discussion_round += 1
             r = s.discussion_round
-            turn = await _agent_turn(
-                settings,
-                ag,
-                s.model,
-                s.user_brief,
-                s.research_brief,
-                transcript,
-                r,
-                "",
-            )
-            uq_s = turn.get("user_question")
-            rec: dict[str, Any] = {
-                "round": r,
-                "agent_id": ag.id,
-                "name": ag.name,
-                "reaction": turn.get("reaction", ""),
-                "planner_note": turn.get("planner_note", ""),
-                "user_question": uq_s,
-            }
-            s.agent_turns.append(rec)
-            s.messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=turn.get("reaction", ""),
-                    agent_id=ag.id,
-                    agent_name=ag.name,
-                    meta={
-                        "planner_note": rec["planner_note"],
-                        "round": r,
-                        "user_question": uq_s,
-                    },
+            tasks = [
+                _agent_turn(
+                    settings,
+                    ag,
+                    s.model,
+                    s.user_brief,
+                    s.research_brief,
+                    transcript,
+                    r,
+                    "",
                 )
-            )
-            yield {
-                "type": "agent",
-                "round": r,
-                "agent_id": ag.id,
-                "name": ag.name,
-                "reaction": turn.get("reaction", ""),
-                "planner_note": turn.get("planner_note", ""),
-                "user_question": uq_s,
-            }
+                for ag in agents_to_run
+            ]
+            turns = await asyncio.gather(*tasks)
+            for ag, turn in zip(agents_to_run, turns):
+                uq_s = turn.get("user_question")
+                rec: dict[str, Any] = {
+                    "round": r,
+                    "agent_id": ag.id,
+                    "name": ag.name,
+                    "reaction": turn.get("reaction", ""),
+                    "planner_note": turn.get("planner_note", ""),
+                    "user_question": uq_s,
+                }
+                s.agent_turns.append(rec)
+                s.messages.append(
+                    ChatMessage(
+                        role="assistant",
+                        content=turn.get("reaction", ""),
+                        agent_id=ag.id,
+                        agent_name=ag.name,
+                        meta={
+                            "planner_note": rec["planner_note"],
+                            "round": r,
+                            "user_question": uq_s,
+                            "parallel_batch": True,
+                        },
+                    )
+                )
+                yield {
+                    "type": "agent",
+                    "round": r,
+                    "agent_id": ag.id,
+                    "name": ag.name,
+                    "reaction": turn.get("reaction", ""),
+                    "planner_note": turn.get("planner_note", ""),
+                    "user_question": uq_s,
+                }
 
     if s.phase == SessionPhase.awaiting_user:
         return

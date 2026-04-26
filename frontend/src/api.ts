@@ -84,6 +84,8 @@ export type SseEvent =
       type: 'orchestrator'
       action: string
       reason?: string
+      /** Specialists to run in parallel this step (empty for non-call actions). */
+      agent_ids?: string[]
       agent_id?: string | null
       step?: number
     }

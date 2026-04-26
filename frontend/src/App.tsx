@@ -79,12 +79,17 @@ function eventLabel(ev: SseEvent): { title: string; body: string; kind: FeedItem
     const e = ev as {
       action: string
       reason?: string
+      agent_ids?: string[]
       agent_id?: string | null
       step?: number
     }
-    const bits = [e.reason, e.agent_id ? `→ ${e.agent_id}` : '']
-      .filter(Boolean)
-      .join(' ')
+    const ids =
+      e.agent_ids?.length
+        ? e.agent_ids.join(', ')
+        : e.agent_id
+          ? e.agent_id
+          : ''
+    const bits = [e.reason, ids ? `→ ${ids}` : ''].filter(Boolean).join(' ')
     return {
       kind: 'phase',
       title:
