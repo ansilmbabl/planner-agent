@@ -280,7 +280,8 @@ export function AgentsTab() {
       )
       return
     }
-    if (id === createFromId) {
+    const templateNone = createFromId === '__none__'
+    if (!templateNone && id === createFromId) {
       setCreateError('New id must differ from the template council you copy from.')
       return
     }
@@ -296,7 +297,7 @@ export function AgentsTab() {
     setCreateError(null)
     setCreating(true)
     try {
-      await createCouncil(id, createFromId)
+      await createCouncil(id, templateNone ? 'none' : createFromId)
       const fresh = await listCouncils()
       if (fresh.length) setCouncilIds(fresh)
       setCouncilId(id)
@@ -484,23 +485,30 @@ export function AgentsTab() {
 
   const removeDebater = useCallback(
     (index: number) => {
-      if (!config || config.debating_agents.length <= 1) return
+      if (!config || config.debating_agents.length < 1) return
       if (!window.confirm('Remove this debater from the pipeline?')) return
       setConfig((c) => {
-        if (!c || c.debating_agents.length <= 1) return c
+        if (!c || index < 0 || index >= c.debating_agents.length) return c
         const list = c.debating_agents.filter((_, i) => i !== index)
-        return { ...c, debating_agents: list }
-      })
-      setSel((s) => {
-        if (s?.kind === 'debate') {
-          if (s.index === index) {
-            return { kind: 'debate', index: Math.max(0, index - 1) }
-          }
-          if (s.index > index) {
-            return { kind: 'debate', index: s.index - 1 }
-          }
-        }
-        return s
+        const next = { ...c, debating_agents: list }
+        queueMicrotask(() => {
+          setSel((prev) => {
+            if (list.length === 0) return { kind: 'synth' }
+            if (prev?.kind === 'debate') {
+              if (prev.index === index) {
+                return {
+                  kind: 'debate',
+                  index: Math.min(index, list.length - 1),
+                }
+              }
+              if (prev.index > index) {
+                return { kind: 'debate', index: prev.index - 1 }
+              }
+            }
+            return prev
+          })
+        })
+        return next
       })
     },
     [config]
@@ -578,7 +586,7 @@ export function AgentsTab() {
         const parsed = parseCouncilConfigText(text)
         if (!parsed) {
           window.alert(
-            'Invalid council JSON: need at least one debating agent with id, name, and fields matching the app.'
+            'Invalid council JSON: check debating_agents entries (id, name, fields) and overall shape.'
           )
           return
         }
@@ -682,7 +690,7 @@ export function AgentsTab() {
   const debaters = config.debating_agents
   const synth = config.synthesizer!
   const orch = mergeCouncilDefaults(config).orchestrator!
-  const canRemoveDebate = debaters.length > 1
+  const canRemoveDebate = debaters.length >= 1
 
   const saveToServerRow = (
     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -908,25 +916,33 @@ export function AgentsTab() {
           <div className="flex flex-col items-stretch min-w-[min(100%,18rem)]">
             <p className="text-[9px] text-slate-500 mb-2">1 · Debating agents (in order each round)</p>
             <div className="flex flex-wrap justify-center sm:flex-nowrap sm:justify-center items-center gap-y-2 gap-x-0">
-              {debaters.map((ag, i) => (
-                <div key={ag.id} className="flex items-center">
-                  {i > 0 && <EdgeH />}
-                  <GraphNode
-                    label={ag.name}
-                    subtitle={ag.title}
-                    id={ag.id}
-                    tools={ag.tools_enabled}
-                    variant="debate"
-                    step={i + 1}
-                    selected={sel?.kind === 'debate' && sel.index === i}
-                    onSelect={() => {
-                      setSel({ kind: 'debate', index: i })
-                      setSaved(false)
-                      setEditorOpen(true)
-                    }}
-                  />
-                </div>
-              ))}
+              {debaters.length === 0 ? (
+                <p className="text-center text-xs text-slate-500 py-4 px-3 max-w-md leading-relaxed">
+                  No debating agents yet. Use{' '}
+                  <span className="text-violet-300 font-medium">+ Add debater</span> below. You need
+                  at least one before running a chat.
+                </p>
+              ) : (
+                debaters.map((ag, i) => (
+                  <div key={ag.id} className="flex items-center">
+                    {i > 0 && <EdgeH />}
+                    <GraphNode
+                      label={ag.name}
+                      subtitle={ag.title}
+                      id={ag.id}
+                      tools={ag.tools_enabled}
+                      variant="debate"
+                      step={i + 1}
+                      selected={sel?.kind === 'debate' && sel.index === i}
+                      onSelect={() => {
+                        setSel({ kind: 'debate', index: i })
+                        setSaved(false)
+                        setEditorOpen(true)
+                      }}
+                    />
+                  </div>
+                ))
+              )}
             </div>
 
             <div className="flex justify-center my-1">
@@ -1180,9 +1196,10 @@ export function AgentsTab() {
                 >
                   New council
                 </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Creates <code className="text-slate-400">config/councils/&lt;id&gt;.json</code> by
-                  copying an existing file.
+                <p className="mt-1 text-xs text-slate-500 leading-relaxed">
+                  Creates <code className="text-slate-400">config/councils/&lt;id&gt;.json</code>.
+                  Choose <span className="text-slate-400">None</span> for orchestrator-only starter
+                  (no specialists); otherwise copy from an existing profile.
                 </p>
                 <div className="mt-4 space-y-3">
                   <label className="block text-xs text-slate-400">
@@ -1210,6 +1227,9 @@ export function AgentsTab() {
                       value={createFromId}
                       onChange={(e) => setCreateFromId(e.target.value)}
                     >
+                      <option value="__none__">
+                        None — orchestrator only (add agents after)
+                      </option>
                       {councilIds.map((id) => (
                         <option key={id} value={id}>
                           {id}

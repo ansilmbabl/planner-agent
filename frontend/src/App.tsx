@@ -14,6 +14,7 @@ import {
   getSession,
   listCouncils,
   listSessions,
+  patchSessionCouncil,
   type HealthResponse,
   type SessionListItem,
   type SessionMessage,
@@ -219,6 +220,9 @@ export default function App() {
   const [councils, setCouncils] = useState<string[]>(['default'])
   const [councilForNew, setCouncilForNew] = useState('default')
   const [sessionCouncilId, setSessionCouncilId] = useState<string | null>(null)
+  const [councilSelectError, setCouncilSelectError] = useState<string | null>(
+    null
+  )
   const [mainView, setMainView] = useState<'council' | 'settings'>('council')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -360,6 +364,7 @@ export default function App() {
   }, [])
 
   const hydrateFromApi = useCallback((data: Awaited<ReturnType<typeof getSession>>) => {
+    setCouncilSelectError(null)
     if (data.model) setModel(data.model)
     setSessionCouncilId(data.council_id || 'default')
     setPhase(data.phase || '')
@@ -407,6 +412,7 @@ export default function App() {
     stopStream()
     try {
       const s = await createSession(model, councilForNew)
+      setCouncilSelectError(null)
       setSessionId(s.id)
       setSessionCouncilId(s.council_id || councilForNew)
       clearWorkspace()
@@ -433,6 +439,7 @@ export default function App() {
         if (sessionId === id) {
           setSessionId(null)
           setSessionCouncilId(null)
+          setCouncilSelectError(null)
           clearWorkspace()
         }
         await loadSessionList()
@@ -448,6 +455,7 @@ export default function App() {
   const ensureSession = useCallback(async () => {
     if (sessionId) return sessionId
     const s = await createSession(model, councilForNew)
+    setCouncilSelectError(null)
     setSessionId(s.id)
     setSessionCouncilId(s.council_id || councilForNew)
     await loadSessionList()
@@ -846,38 +854,71 @@ export default function App() {
                     : 'Checking…'}
               </span>
             </div>
-            <label className="flex items-center gap-1.5 min-w-0 shrink max-w-[min(42vw,9.5rem)] sm:max-w-[11rem]">
-              <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium hidden sm:inline shrink-0">
-                Council
-              </span>
-              <select
-                className="min-w-0 flex-1 text-xs leading-tight py-1.5 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/35 focus:ring-offset-0 disabled:opacity-50"
-                value={
-                  sessionId
-                    ? (sessionCouncilId ?? 'default')
-                    : councilForNew
-                }
-                onChange={(e) => {
-                  if (!sessionId) setCouncilForNew(e.target.value)
-                }}
-                disabled={!!sessionId || busy}
-                title={
-                  sessionId
-                    ? 'This chat is locked to the council you started with'
-                    : 'Agent council for the next new chat (config/councils/<id>.json)'
-                }
-                aria-label="Council"
-              >
-                {councils.length === 0 && (
-                  <option value="default">default</option>
-                )}
-                {councils.map((cid) => (
-                  <option key={cid} value={cid}>
-                    {cid}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="flex flex-col gap-0.5 min-w-0 shrink max-w-[min(42vw,9.5rem)] sm:max-w-[11rem]">
+              <label className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium hidden sm:inline shrink-0">
+                  Council
+                </span>
+                <select
+                  className="min-w-0 flex-1 text-xs leading-tight py-1.5 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/35 focus:ring-offset-0 disabled:opacity-50"
+                  value={
+                    sessionId
+                      ? (sessionCouncilId ?? 'default')
+                      : councilForNew
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setCouncilSelectError(null)
+                    if (!sessionId) {
+                      setCouncilForNew(v)
+                      return
+                    }
+                    const prev = sessionCouncilId ?? 'default'
+                    setSessionCouncilId(v)
+                    setCouncilForNew(v)
+                    void (async () => {
+                      try {
+                        await patchSessionCouncil(sessionId, v)
+                      } catch (err) {
+                        setSessionCouncilId(prev)
+                        setCouncilForNew(prev)
+                        setCouncilSelectError(
+                          err instanceof Error
+                            ? err.message
+                            : 'Could not update council'
+                        )
+                      }
+                    })()
+                  }}
+                  disabled={busy}
+                  title={
+                    busy
+                      ? 'Wait until the current run finishes'
+                      : sessionId
+                        ? 'Council for this chat — applies to the next message (config/councils/<id>.json)'
+                        : 'Agent council for the next new chat'
+                  }
+                  aria-label="Council"
+                >
+                  {councils.length === 0 && (
+                    <option value="default">default</option>
+                  )}
+                  {councils.map((cid) => (
+                    <option key={cid} value={cid}>
+                      {cid}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {councilSelectError && (
+                <span
+                  className="text-[10px] text-rose-300/95 truncate sm:pl-1"
+                  title={councilSelectError}
+                >
+                  {councilSelectError}
+                </span>
+              )}
+            </div>
             <label className="flex items-center gap-2 min-w-0 grow sm:grow-0 sm:shrink sm:max-w-[min(50vw,16rem)]">
               <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium hidden sm:inline shrink-0">
                 Model

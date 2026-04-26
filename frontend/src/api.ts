@@ -127,10 +127,15 @@ export async function createCouncil(
   newId: string,
   fromId: string = 'default'
 ): Promise<{ status: string; id: string; path: string }> {
+  const noneTemplate =
+    fromId === 'none' || fromId === '' || fromId === '__none__'
   const r = await fetch(`${API}/councils`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: newId.trim(), from_id: fromId }),
+    body: JSON.stringify({
+      id: newId.trim(),
+      from_id: noneTemplate ? 'none' : fromId,
+    }),
   })
   if (!r.ok) {
     const t = await r.text()
@@ -215,6 +220,22 @@ export async function getSession(
 ): Promise<SessionResponse> {
   const r = await fetch(`${API}/sessions/${sessionId}`)
   if (!r.ok) throw new Error(`session: ${r.status}`)
+  return r.json()
+}
+
+export async function patchSessionCouncil(
+  sessionId: string,
+  councilId: string
+): Promise<{ id: string; council_id: string }> {
+  const r = await fetch(`${API}/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ council_id: councilId }),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `patch session: ${r.status}`)
+  }
   return r.json()
 }
 

@@ -18,6 +18,7 @@ from .councils import (
     ensure_default_council_file,
     list_council_ids,
     load_council,
+    new_orchestrator_only_council,
     save_council,
     validate_council_id,
 )
@@ -83,6 +84,13 @@ class PostMessageBody(BaseModel):
     model: str | None = None
 
 
+class PatchSessionBody(BaseModel):
+    council_id: str = Field(
+        ...,
+        description="Agent council for subsequent messages (config/councils/{id}.json)",
+    )
+
+
 def _require_council_for_id(council_id: str) -> CouncilConfigFile:
     st = get_settings()
     try:
@@ -120,29 +128,38 @@ class CreateCouncilBody(BaseModel):
     id: str = Field(..., min_length=1, max_length=64, description="New file config/councils/{id}.json")
     from_id: str = Field(
         default="default",
-        description="Template council to copy (debating_agents + synthesizer)",
+        description='Template council to copy, or "none" for orchestrator-only starter (add agents in UI).',
     )
+
+
+_NONE_TEMPLATE = frozenset({"", "none", "__none__"})
 
 
 @app.post("/api/councils", response_model=None)
 async def create_council(body: CreateCouncilBody) -> dict[str, str]:
     s = get_settings()
     new_id = body.id.strip()
-    from_id = (body.from_id or "default").strip() or "default"
+    raw_from = (body.from_id or "default").strip()
+    use_orchestrator_only = raw_from.lower() in _NONE_TEMPLATE
+    from_id = "default" if use_orchestrator_only else (raw_from or "default")
     if not validate_council_id(new_id):
         raise HTTPException(
             400,
             "Invalid id: use letters, numbers, _ or - only (1–64 chars, must start with letter or number)",
         )
-    if not validate_council_id(from_id):
-        raise HTTPException(400, "Invalid from_id")
-    if new_id == from_id:
-        raise HTTPException(400, "New id must differ from template from_id")
+    if not use_orchestrator_only:
+        if not validate_council_id(from_id):
+            raise HTTPException(400, "Invalid from_id")
+        if new_id == from_id:
+            raise HTTPException(400, "New id must differ from template from_id")
     target = s.councils_dir / f"{new_id}.json"
     if target.is_file():
         raise HTTPException(409, f"Council {new_id!r} already exists")
     try:
-        template = load_council(from_id, s.councils_dir, s.council_config_path)
+        if use_orchestrator_only:
+            template = new_orchestrator_only_council()
+        else:
+            template = load_council(from_id, s.councils_dir, s.council_config_path)
     except FileNotFoundError as e:
         raise HTTPException(404, f"Template council not found: {from_id!r}") from e
     try:
@@ -335,6 +352,23 @@ async def get_session(session_id: str) -> dict[str, Any]:
             for m in sess.messages
         ],
     }
+
+
+@app.patch("/api/sessions/{session_id}", response_model=None)
+async def patch_session(session_id: str, body: PatchSessionBody) -> dict[str, Any]:
+    sess = store.get(session_id)
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    cid = (body.council_id or "default").strip() or "default"
+    if not validate_council_id(cid):
+        raise HTTPException(
+            400,
+            "Invalid council_id (use a–z, 0–9, _ or -, max 64 chars)",
+        )
+    _require_council_for_id(cid)
+    sess.council_id = cid
+    store.save(sess)
+    return {"id": sess.id, "council_id": sess.council_id}
 
 
 @app.post("/api/sessions/{session_id}/message", response_class=StreamingResponse)

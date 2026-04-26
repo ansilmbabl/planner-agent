@@ -4,7 +4,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .council_config import CouncilConfigFile, load_council_config, save_council_config
+from .council_config import AgentDef, CouncilConfigFile, load_council_config, save_council_config
 
 _COUNCIL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
@@ -85,6 +85,27 @@ def delete_council(
             )
         raise FileNotFoundError(s)
     path.unlink()
+
+
+def new_orchestrator_only_council() -> CouncilConfigFile:
+    """Minimal council: default orchestrator + routing instructions, no specialists yet."""
+    from .prompts.orchestrator import (
+        DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
+        DEFAULT_ORCHESTRATOR_USER_INSTRUCTIONS,
+    )
+
+    return CouncilConfigFile(
+        debating_agents=[],
+        synthesizer=None,
+        orchestrator=AgentDef(
+            id="orchestrator",
+            name="Orchestrator",
+            title="Council routing",
+            system_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
+            tools_enabled=False,
+        ),
+        orchestrator_user_instructions=DEFAULT_ORCHESTRATOR_USER_INSTRUCTIONS,
+    )
 
 
 def ensure_default_council_file(councils_dir: Path, legacy_council: Path) -> None:

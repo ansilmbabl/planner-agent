@@ -138,8 +138,12 @@ def _normalize_orch_decision(
 
     if action in ("ask_user", "ready_for_plan", "call_synthesizer"):
         agent_ids_out = []
-    elif action == "call_agents" and not agent_ids_out:
-        agent_ids_out = [_pick_least_called_debater(debaters, agent_turns).id]
+    elif action == "call_agents":
+        if not debaters:
+            action = "ready_for_plan"
+            agent_ids_out = []
+        elif not agent_ids_out:
+            agent_ids_out = [_pick_least_called_debater(debaters, agent_turns).id]
 
     return action, agent_ids_out, questions, reason
 
@@ -579,7 +583,10 @@ async def run_council_pipeline(
     debaters = council.debating_agents
     if not debaters:
         s.phase = SessionPhase.error
-        s.error_message = "No debating agents in council config"
+        s.error_message = (
+            "This council has no debating agents yet. Open Settings → Agents, "
+            "add at least one specialist, save, then try again (or pick another council)."
+        )
         yield {"type": "error", "message": s.error_message}
         return
 

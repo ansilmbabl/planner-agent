@@ -54,12 +54,12 @@ function normalizeAgentFromJson(
 }
 
 /**
- * Import council config from JSON (file or API). Tolerates minor shape issues; rejects empty debate list.
+ * Import council config from JSON (file or API). Tolerates minor shape issues; allows zero debaters (orchestrator-only starter).
  */
 export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
   if (!data || typeof data !== 'object') return null
   const o = data as Record<string, unknown>
-  if (!Array.isArray(o.debating_agents) || o.debating_agents.length < 1) return null
+  if (!Array.isArray(o.debating_agents)) return null
 
   const debaters: AgentDef[] = []
   const usedIds = new Set<string>()
