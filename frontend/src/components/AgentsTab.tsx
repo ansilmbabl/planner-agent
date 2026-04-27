@@ -10,10 +10,14 @@ import { createPortal } from 'react-dom'
 import {
   createCouncil,
   deleteCouncil,
+  getBuiltinPrompts,
   getCouncil,
   listCouncils,
+  putBuiltinPrompt,
   putCouncil,
+  resetBuiltinPrompts,
   type AgentDef,
+  type BuiltinPromptItem,
   type CouncilConfig,
 } from '../api'
 import {
@@ -22,8 +26,10 @@ import {
   defaultSynthesizer,
   mergeCouncilDefaults,
   parseCouncilConfigText,
-  uniqueNewAgentId,
+  slugAgentId,
 } from '../agentsConfigUtils'
+import { PromptPipelineMap } from './PromptPipelineMap'
+import { PromptRefineWidget } from './PromptRefineWidget'
 
 type Selection = { kind: 'debate'; index: number } | { kind: 'synth' }
 
@@ -184,6 +190,197 @@ function nextSelection(
 
 const NEW_COUNCIL_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 
+function PipelineBuiltinPrompts({
+  refineModels,
+  refineDefaultModel,
+}: {
+  refineModels: string[]
+  refineDefaultModel: string
+}) {
+  const [items, setItems] = useState<BuiltinPromptItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [savingKey, setSavingKey] = useState<string | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+
+  const reload = useCallback(async () => {
+    const rows = await getBuiltinPrompts()
+    setItems(rows)
+    setDrafts((prev) => {
+      const next = { ...prev }
+      for (const r of rows) next[r.key] = r.content
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancel = false
+    setLoading(true)
+    void (async () => {
+      try {
+        await reload()
+        if (!cancel) setErr(null)
+      } catch (e) {
+        if (!cancel) {
+          setErr(e instanceof Error ? e.message : 'Could not load pipeline prompts')
+        }
+      } finally {
+        if (!cancel) setLoading(false)
+      }
+    })()
+    return () => {
+      cancel = true
+    }
+  }, [reload])
+
+  const byCategory = useMemo(() => {
+    const m = new Map<string, BuiltinPromptItem[]>()
+    for (const it of items) {
+      const arr = m.get(it.category) ?? []
+      arr.push(it)
+      m.set(it.category, arr)
+    }
+    return m
+  }, [items])
+
+  const saveKey = async (key: string) => {
+    setSavingKey(key)
+    setErr(null)
+    try {
+      await putBuiltinPrompt(key, drafts[key] ?? '')
+      await reload()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setSavingKey(null)
+    }
+  }
+
+  const onResetAll = async () => {
+    if (
+      !window.confirm(
+        'Reset every pipeline prompt override to built-in defaults? This clears data/prompt_overrides.json.'
+      )
+    ) {
+      return
+    }
+    setErr(null)
+    try {
+      const j = await resetBuiltinPrompts()
+      setItems(j.prompts)
+      const d: Record<string, string> = {}
+      for (const r of j.prompts) d[r.key] = r.content
+      setDrafts(d)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Reset failed')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-2xl border border-slate-600/40 bg-slate-950/40 p-4 text-sm text-slate-500">
+        Loading pipeline prompts…
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-b from-cyan-950/20 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-cyan-200/95">Pipeline defaults (editable fragments)</h3>
+          <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
+            Global defaults used by the backend (plan creation after debate, research, specialist JSON shape,
+            routing schema, plan refine). Overrides are stored in{' '}
+            <code className="text-slate-600">data/prompt_overrides.json</code> next to the session database — not
+            in council JSON.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void onResetAll()}
+          className="shrink-0 text-xs font-medium rounded-lg border border-slate-600/60 bg-slate-900/50 px-2.5 py-1.5 text-slate-300 hover:bg-white/[0.05]"
+        >
+          Reset all overrides
+        </button>
+      </div>
+      {err && (
+        <p className="text-xs text-amber-200/95 border border-amber-500/25 rounded-lg px-2 py-1.5">{err}</p>
+      )}
+      <div className="space-y-6">
+        {Array.from(byCategory.entries()).map(([cat, rows]) => (
+          <div key={cat}>
+            <h4 className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">{cat}</h4>
+            <div className="space-y-3">
+              {rows.map((row) => {
+                const dirty = (drafts[row.key] ?? '') !== row.content
+                return (
+                  <div
+                    key={row.key}
+                    className="rounded-xl border border-white/[0.06] bg-slate-900/40 p-3 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-medium text-slate-200">{row.title}</div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 max-w-prose">{row.description}</p>
+                        <code className="text-[10px] text-slate-600 mt-1 inline-block">{row.key}</code>
+                        {!row.is_default && (
+                          <span className="ml-2 text-[10px] text-amber-200/80">custom override</span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={!dirty || savingKey === row.key}
+                          onClick={() => void saveKey(row.key)}
+                          className="text-xs font-medium rounded-lg bg-cyan-600/90 hover:bg-cyan-500 disabled:opacity-40 px-2.5 py-1 text-white"
+                        >
+                          {savingKey === row.key ? 'Saving…' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            savingKey === row.key ||
+                            (drafts[row.key] ?? '') === row.content
+                          }
+                          onClick={() => {
+                            setDrafts((d) => ({ ...d, [row.key]: row.content }))
+                          }}
+                          className="text-xs font-medium rounded-lg border border-slate-600/60 px-2.5 py-1 text-slate-300 hover:bg-white/[0.05] disabled:opacity-40"
+                        >
+                          Revert
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
+                      className="w-full min-h-[7rem] rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-xs text-slate-100 font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                      value={drafts[row.key] ?? ''}
+                      onChange={(e) =>
+                        setDrafts((d) => ({ ...d, [row.key]: e.target.value }))
+                      }
+                      spellCheck={false}
+                    />
+                    <PromptRefineWidget
+                      contextLabel={`Pipeline prompt: ${row.key} (${row.title})`}
+                      currentText={drafts[row.key] ?? ''}
+                      models={refineModels}
+                      defaultModel={refineDefaultModel}
+                      onApply={(text) =>
+                        setDrafts((d) => ({ ...d, [row.key]: text }))
+                      }
+                      compact
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function isValidNewCouncilId(s: string) {
   const t = s.trim()
   return t.length > 0 && t.length <= 64 && NEW_COUNCIL_ID_RE.test(t)
@@ -193,10 +390,14 @@ function AgentSystemPromptCard({
   roleLabel,
   agent,
   onChange,
+  refineModels = [],
+  refineDefaultModel = '',
 }: {
   roleLabel: string
   agent: AgentDef
   onChange: (patch: Partial<AgentDef>) => void
+  refineModels?: string[]
+  refineDefaultModel?: string
 }) {
   const sp = agent.system_prompt ?? ''
   const lines = sp ? sp.split(/\r\n|\r|\n/).length : 0
@@ -239,6 +440,14 @@ function AgentSystemPromptCard({
           spellCheck={false}
         />
       </label>
+      <PromptRefineWidget
+        contextLabel={`${roleLabel}: ${agent.name || agent.id} — system prompt`}
+        currentText={agent.system_prompt ?? ''}
+        models={refineModels}
+        defaultModel={refineDefaultModel}
+        onApply={(text) => onChange({ system_prompt: text })}
+        compact
+      />
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
         <span>
           {lines} line{lines === 1 ? '' : 's'} · {chars} chars
@@ -257,18 +466,19 @@ function AgentSystemPromptCard({
   )
 }
 
-export type AgentsTabMode = 'all' | 'agents' | 'prompts'
+export type AgentsTabMode = 'agents' | 'prompts_pipeline' | 'prompts_council'
 
 type AgentsTabProps = {
-  /**
-   * `all` — orchestrator prompts + pipeline (legacy single page).
-   * `prompts` — orchestrator & routing text only (Settings → Prompts).
-   * `agents` — debaters, synthesizer, graph (Settings → Council agents).
-   */
   mode?: AgentsTabMode
+  refineModels?: string[]
+  refineModel?: string
 }
 
-export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
+export function AgentsTab({
+  mode = 'agents',
+  refineModels = [],
+  refineModel = '',
+}: AgentsTabProps) {
   const [councilId, setCouncilId] = useState('default')
   const [councilIds, setCouncilIds] = useState<string[]>(['default'])
   const [config, setConfig] = useState<CouncilConfig | null>(null)
@@ -582,7 +792,8 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
       if (!c) return c
       const taken = new Set(c.debating_agents.map((a) => a.id))
       if (c.synthesizer) taken.add(c.synthesizer.id)
-      const id = uniqueNewAgentId(taken)
+      taken.add(mergeCouncilDefaults(c).orchestrator!.id)
+      const id = slugAgentId('new debater', taken)
       const fresh: AgentDef = {
         id,
         name: 'New debater',
@@ -642,7 +853,8 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
         const taken = new Set(
           c.debating_agents.map((a) => a.id).concat(c.synthesizer ? [c.synthesizer.id] : [])
         )
-        const newId = uniqueNewAgentId(taken, source.id)
+        taken.add(mergeCouncilDefaults(c).orchestrator!.id)
+        const newId = slugAgentId(`${source.name} copy`, taken)
         const copy: AgentDef = {
           ...source,
           id: newId,
@@ -758,7 +970,7 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
         setEditorOpen(false)
         return
       }
-      if (mode === 'prompts') return
+      if (mode === 'prompts_pipeline' || mode === 'prompts_council') return
       if (e.target && (e.target as HTMLElement).closest('textarea, input')) {
         if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
           e.preventDefault()
@@ -798,6 +1010,16 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
     if (!ag) return null
     return { role: 'debate' as const, index: sel.index, agent: ag }
   }, [config, sel])
+
+  const councilAllIds = useMemo(() => {
+    if (!config) return new Set<string>()
+    const m = mergeCouncilDefaults(config)
+    const s = new Set<string>()
+    if (m.orchestrator) s.add(m.orchestrator.id)
+    for (const a of m.debating_agents) s.add(a.id)
+    if (m.synthesizer) s.add(m.synthesizer.id)
+    return s
+  }, [config])
 
   if (loadError) {
     return (
@@ -842,39 +1064,38 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
     </div>
   )
 
-  const showPrompts = mode === 'all' || mode === 'prompts'
-  const showAgents = mode === 'all' || mode === 'agents'
+  const showAgents = mode === 'agents'
+  const showPipelinePrompts = mode === 'prompts_pipeline'
+  const showCouncilPrompts = mode === 'prompts_council'
+  const showCouncilToolbar = mode === 'agents' || mode === 'prompts_council'
 
   return (
     <div className="space-y-4 pb-8">
-      {mode === 'all' && (
+      {showPipelinePrompts && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          The <span className="text-amber-200/90">Orchestrator</span> chooses each step (which
-          specialist, optional synthesizer, you, or finish). Below that, the{' '}
-          <span className="text-slate-200">row</span> is specialist order for reference; an optional{' '}
-          <span className="text-violet-300/90">Synthesizer</span> can align debate before the plan
-          writer. Profiles live under{' '}
-          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+          <span className="text-cyan-200/90 font-medium">Pipeline defaults</span> are global fragments the backend
+          merges with live session text (orchestrator JSON schema, plan writer, research, specialist turn shape).
+          They are <span className="text-slate-300">not</span> the full prompts sent to the model — see the map
+          below. Overrides: <code className="text-slate-500">data/prompt_overrides.json</code>.
         </p>
       )}
-      {mode === 'prompts' && (
+      {showCouncilPrompts && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          <span className="text-amber-200/90 font-medium">Prompt engineering</span> for the
-          selected council: orchestrator (routing), specialists, and an optional synthesizer.
-          Action JSON schema is in{' '}
-          <code className="text-slate-500">backend/app/prompts/orchestrator.py</code>. Save writes{' '}
-          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+          <span className="text-amber-200/90 font-medium">Council &amp; roles</span> — orchestrator persona,
+          routing guidelines, and each specialist&apos;s system prompt. Saved with the council file under{' '}
+          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>. JSON action shape lives under{' '}
+          <span className="text-cyan-200/80">Pipeline defaults</span>.
         </p>
       )}
-      {mode === 'agents' && (
+      {showAgents && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          <span className="text-violet-300/90 font-medium">Specialists &amp; optional synthesizer</span>{' '}
-          for the selected council — order, prompts, and tools. For orchestrator text use the{' '}
-          <span className="text-slate-300">Prompts</span> tab. Files live under{' '}
-          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>.
+          <span className="text-violet-300/90 font-medium">Council agents</span> — graph order, routing ids, tools,
+          and full prompts in the editor. For orchestrator wording without the graph, use{' '}
+          <span className="text-slate-300">Council &amp; roles</span>.
         </p>
       )}
 
+      {showCouncilToolbar && (
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 rounded-xl border border-white/[0.08] bg-slate-900/30 px-3 py-2.5">
         <label className="flex items-center gap-2 text-xs text-slate-400 shrink-0 min-w-0 max-w-full sm:max-w-[12rem]">
           <span className="shrink-0">Editing</span>
@@ -968,6 +1189,7 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
           />
         </div>
       </div>
+      )}
 
       {showAgents && (
         <p className="text-[11px] text-slate-500">
@@ -977,19 +1199,29 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
         </p>
       )}
 
-      {showPrompts && (
+      {showPipelinePrompts && (
+        <>
+          <PromptPipelineMap />
+          <PipelineBuiltinPrompts
+            refineModels={refineModels}
+            refineDefaultModel={refineModel}
+          />
+        </>
+      )}
+
+      {showCouncilPrompts && (
       <div className="rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/25 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-3">
         <div>
           <h3 className="text-sm font-semibold text-amber-200/95">
-            {mode === 'prompts' ? 'Orchestrator prompts' : 'Orchestrator routing'}
+            Orchestrator &amp; routing
           </h3>
           <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
             <span className="text-slate-400">System prompt</span> is the orchestrator&apos;s role
             (sent as the system message).{' '}
             <span className="text-slate-400">Routing guidelines</span> are inserted into each routing
-            user turn. The fixed JSON action schema is in{' '}
-            <code className="text-slate-600">backend/app/prompts/orchestrator.py</code>. Clear
-            guidelines and save to fall back to server defaults.
+            user turn. The action JSON schema is editable under{' '}
+            <span className="text-cyan-200/80">Pipeline defaults</span> → Orchestrator — action JSON schema.
+            Clear guidelines and save to fall back to server defaults.
           </p>
         </div>
         <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer max-w-3xl">
@@ -1050,6 +1282,14 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
             onChange={(e) => updateOrchestrator({ system_prompt: e.target.value })}
           />
         </label>
+        <PromptRefineWidget
+          contextLabel="Orchestrator system prompt (council)"
+          currentText={orch.system_prompt ?? ''}
+          models={refineModels}
+          defaultModel={refineModel}
+          onApply={(text) => updateOrchestrator({ system_prompt: text })}
+          compact
+        />
         <label className="block text-xs text-slate-400">
           Routing guidelines (user message)
           <textarea
@@ -1059,10 +1299,18 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
             placeholder="Leave empty to use defaults from backend/app/prompts/orchestrator.py"
           />
         </label>
+        <PromptRefineWidget
+          contextLabel="Orchestrator routing guidelines (user message)"
+          currentText={config.orchestrator_user_instructions ?? ''}
+          models={refineModels}
+          defaultModel={refineModel}
+          onApply={(text) => setOrchestratorUserInstructions(text)}
+          compact
+        />
       </div>
       )}
 
-      {mode === 'prompts' && (
+      {showCouncilPrompts && (
         <div className="space-y-4 max-w-5xl">
           <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/25 to-slate-950/50 p-4 sm:p-5 space-y-4">
             <div>
@@ -1087,6 +1335,8 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
                     roleLabel={`Specialist ${i + 1}`}
                     agent={ag}
                     onChange={(p) => updateDebater(i, p)}
+                    refineModels={refineModels}
+                    refineDefaultModel={refineModel}
                   />
                 ))}
               </div>
@@ -1096,6 +1346,8 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
                 roleLabel="Synthesizer"
                 agent={synth}
                 onChange={updateSynth}
+                refineModels={refineModels}
+                refineDefaultModel={refineModel}
               />
             ) : (
               <div className="rounded-xl border border-dashed border-violet-500/25 bg-black/20 px-4 py-6 space-y-3">
@@ -1223,7 +1475,10 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
             <li>
               <span className="text-emerald-400/80">tools</span> = search/tools enabled in the pipeline
             </li>
-            <li>Ids are stable in transcripts; duplicate creates a new id.</li>
+            <li>
+              Routing ids are stable in logs and orchestrator JSON (not random — derived from name or a slug).
+              Edit them in the agent panel; display name is separate.
+            </li>
           </ul>
         </div>
 
@@ -1311,6 +1566,10 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
                         agent={selectedAgent.agent}
                         onChange={updateSynth}
                         promptMinH="min-h-[12rem] sm:min-h-[16rem]"
+                        idContext={{ allIds: councilAllIds }}
+                        refineModels={refineModels}
+                        refineDefaultModel={refineModel}
+                        refineContextLabel="Synthesizer system prompt"
                       />
                     </div>
                   </>
@@ -1404,6 +1663,10 @@ export function AgentsTab({ mode = 'all' }: AgentsTabProps) {
                         agent={selectedAgent.agent}
                         onChange={(p) => updateDebater(selectedAgent.index, p)}
                         promptMinH="min-h-[12rem] sm:min-h-[16rem]"
+                        idContext={{ allIds: councilAllIds }}
+                        refineModels={refineModels}
+                        refineDefaultModel={refineModel}
+                        refineContextLabel={`Specialist ${selectedAgent.index + 1} system prompt`}
                       />
                     </div>
                   </>
@@ -1525,10 +1788,19 @@ function AgentFields({
   agent,
   onChange,
   promptMinH,
+  idContext,
+  refineModels = [],
+  refineDefaultModel = '',
+  refineContextLabel = 'Agent system prompt',
 }: {
   agent: AgentDef
   onChange: (p: Partial<AgentDef>) => void
   promptMinH: string
+  /** When set, show routing id + slug helper (specialists & synthesizer). */
+  idContext?: { allIds: Set<string> }
+  refineModels?: string[]
+  refineDefaultModel?: string
+  refineContextLabel?: string
 }) {
   const sp = agent.system_prompt ?? ''
   const lines = sp ? sp.split(/\r\n|\r|\n/).length : 0
@@ -1559,6 +1831,38 @@ function AgentFields({
           onChange={(e) => onChange({ title: e.target.value })}
         />
       </label>
+      {idContext && (
+        <div className="rounded-lg border border-violet-500/20 bg-slate-900/35 px-2.5 py-2.5 space-y-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="block text-xs text-slate-500 flex-1 min-w-[10rem]">
+              Routing id
+              <input
+                type="text"
+                className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+                autoComplete="off"
+                spellCheck={false}
+                value={agent.id}
+                onChange={(e) => onChange({ id: e.target.value.trim() || agent.id })}
+                aria-label="Routing id for orchestrator and logs"
+              />
+            </label>
+            <button
+              type="button"
+              className="shrink-0 text-xs font-medium rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-2 text-violet-200 hover:bg-violet-500/20"
+              onClick={() => {
+                const next = slugAgentId(agent.name || 'agent', idContext.allIds, agent.id)
+                onChange({ id: next })
+              }}
+            >
+              Slug from name
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            Stable id referenced in activity and <code className="text-slate-600">call_agents</code> JSON.
+            Display name above is only for the UI transcript.
+          </p>
+        </div>
+      )}
       <div>
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <label className="text-xs text-slate-500">System prompt</label>
@@ -1580,6 +1884,14 @@ function AgentFields({
           className={`mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-violet-500/50 ${promptMinH}`}
           value={agent.system_prompt}
           onChange={(e) => onChange({ system_prompt: e.target.value })}
+        />
+        <PromptRefineWidget
+          contextLabel={`${refineContextLabel}: ${agent.name || agent.id}`}
+          currentText={agent.system_prompt ?? ''}
+          models={refineModels}
+          defaultModel={refineDefaultModel}
+          onApply={(text) => onChange({ system_prompt: text })}
+          compact
         />
       </div>
       <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">

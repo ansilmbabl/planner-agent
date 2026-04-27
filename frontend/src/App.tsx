@@ -27,7 +27,7 @@ import {
 } from './api'
 import { mergeCouncilDefaults } from './agentsConfigUtils'
 import { MessageMarkdown } from './components/MessageMarkdown'
-import { SettingsPanel } from './components/SettingsPanel'
+import { SettingsPanel, type SettingsTab } from './components/SettingsPanel'
 
 type FeedLane = 'chat' | 'process'
 
@@ -130,12 +130,22 @@ function eventLabel(ev: SseEvent): {
       agent_ids?: string[]
       agent_id?: string | null
       step?: number
+      agent_labels?: Record<string, string>
     }
+    const labels = e.agent_labels
+    const formatTargets = (raw: string[]) =>
+      raw
+        .map((id) => {
+          const name = labels?.[id]?.trim()
+          if (name && name !== id) return `${name} (${id})`
+          return id
+        })
+        .join(', ')
     const ids =
       e.agent_ids?.length
-        ? e.agent_ids.join(', ')
+        ? formatTargets(e.agent_ids)
         : e.agent_id
-          ? e.agent_id
+          ? formatTargets([e.agent_id])
           : ''
     const bits = [e.reason, ids ? `→ ${ids}` : ''].filter(Boolean).join(' ')
     return {
@@ -419,6 +429,15 @@ export default function App() {
     null
   )
   const [mainView, setMainView] = useState<'council' | 'settings'>('council')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('flow')
+
+  const openSettings = useCallback((tab?: SettingsTab) => {
+    setSidebarOpen(false)
+    if (tab !== undefined) {
+      setSettingsTab(tab)
+    }
+    setMainView('settings')
+  }, [])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [feed, setFeed] = useState<FeedItem[]>([])
@@ -1125,7 +1144,7 @@ export default function App() {
   return (
     <div className="h-dvh flex flex-col sm:flex-row text-slate-100 overflow-hidden selection:bg-violet-500/25">
       {/* Mobile: dim + close when tapping outside */}
-      {sidebarOpen && (
+      {sidebarOpen && mainView !== 'settings' && (
         <button
           type="button"
           aria-label="Close chat list"
@@ -1134,7 +1153,8 @@ export default function App() {
         />
       )}
 
-      {/* Sidebar — sessions (desktop width draggable) */}
+      {/* Sidebar — hidden in full-screen settings */}
+      {mainView !== 'settings' && (
       <aside
         id="session-sidebar"
         className={`
@@ -1312,17 +1332,9 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              setMainView('settings')
-              setSidebarOpen(false)
+              openSettings()
             }}
-            className={`
-              w-full rounded-xl px-3 py-2.5 text-left text-sm transition-colors
-              ${
-                mainView === 'settings'
-                  ? 'bg-violet-500/15 text-violet-100 ring-1 ring-violet-500/35'
-                  : 'text-slate-400 hover:bg-white/[0.05] hover:text-slate-200'
-              }
-            `}
+            className="w-full rounded-xl px-3 py-2.5 text-left text-sm transition-colors text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
           >
             <span className="flex items-center gap-2.5">
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.06] text-slate-400">
@@ -1333,12 +1345,13 @@ export default function App() {
               </span>
               <span>
                 <span className="font-medium text-slate-200">Settings</span>
-                <span className="block text-[11px] text-slate-500 mt-0.5">Model &amp; agents</span>
+                <span className="block text-[11px] text-slate-500 mt-0.5">Flow, prompts, connection</span>
               </span>
             </span>
           </button>
         </div>
       </aside>
+      )}
 
       <div
         className="flex-1 flex flex-col min-w-0 min-h-0"
@@ -1361,7 +1374,17 @@ export default function App() {
                 Workspace
               </div>
               <p className="text-[11px] text-slate-500 leading-snug hidden sm:block mt-0.5">
-                Message the council · outputs on the right
+                Orchestrator routes each step · plan on the right ·{' '}
+                <button
+                  type="button"
+                  className="text-violet-400/90 hover:text-violet-300 underline-offset-2 hover:underline"
+                  onClick={() => {
+                    openSettings('flow')
+                  }}
+                >
+                  Flow
+                </button>{' '}
+                in Settings explains the pipeline
               </p>
             </div>
             <div
@@ -1491,8 +1514,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => {
-                setMainView('settings')
-                setSidebarOpen(false)
+                openSettings()
               }}
               className="hidden sm:inline-flex text-xs font-medium rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-slate-300 hover:bg-white/[0.07] shrink-0"
             >
@@ -1513,8 +1535,7 @@ export default function App() {
               type="button"
               className="shrink-0 text-amber-100 underline underline-offset-2"
               onClick={() => {
-                setMainView('settings')
-                setSidebarOpen(false)
+                openSettings()
               }}
             >
               Open Settings
@@ -1537,6 +1558,10 @@ export default function App() {
               health={health}
               modelHint={modelHint}
               ollamaHostReachable={ollamaHostReachable}
+              models={models}
+              selectedModel={model}
+              activeTab={settingsTab}
+              onTabChange={setSettingsTab}
               onRefresh={() => {
                 void refreshConnection()
                 void loadSessionList()
@@ -1621,19 +1646,33 @@ export default function App() {
                     Welcome
                   </p>
                   <p className="text-slate-400 text-sm mt-3 leading-relaxed max-w-sm mx-auto">
-                    Start a chat, choose a model above, and describe what you need. Your thread stays
-                    clean — turn <span className="text-slate-300">All</span> on to see routing and
-                    research steps.
+                    The <span className="text-slate-300">council</span> runs a loop: orchestrator chooses
+                    research, specialists, synthesizer, then writes <code className="text-slate-500">plan.md</code>.
+                    Your thread can stay chat-focused — enable <span className="text-slate-300">All</span> to watch
+                    routing and research.
+                  </p>
+                  <p className="text-slate-500 text-xs mt-4 max-w-sm mx-auto leading-relaxed">
+                    New to the flow? Open{' '}
+                    <button
+                      type="button"
+                      className="text-violet-400 hover:text-violet-300 font-medium"
+                      onClick={() => {
+                        openSettings('flow')
+                      }}
+                    >
+                      Settings → Flow
+                    </button>
+                    .
                   </p>
                   <div className="mt-6 flex flex-col sm:flex-row gap-2 justify-center text-sm text-slate-500">
                     <span className="rounded-lg bg-white/[0.04] px-3 py-2 border border-white/[0.06]">
-                      1. New chat
+                      1. Model + council
                     </span>
                     <span className="rounded-lg bg-white/[0.04] px-3 py-2 border border-white/[0.06]">
-                      2. Model + council
+                      2. Send your idea
                     </span>
                     <span className="rounded-lg bg-white/[0.04] px-3 py-2 border border-white/[0.06]">
-                      3. Send message
+                      3. Plan tab when ready
                     </span>
                   </div>
                 </div>

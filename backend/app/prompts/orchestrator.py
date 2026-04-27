@@ -74,6 +74,9 @@ def build_orchestrator_user_message(
         "verification, citations, or up-to-date web facts; otherwise prefer orchestrator_reply or "
         "call_agents when sufficient."
     )
+    from ..prompt_catalog import get_prompt
+
+    decision_schema = get_prompt("orchestrator_decision_schema").strip() or ORCH_DECISION_SCHEMA
     return f"""# Routing task
 
 ## User idea
@@ -100,5 +103,5 @@ def build_orchestrator_user_message(
 ## Routing guidelines (editable in council JSON / UI)
 {body}
 
-{ORCH_DECISION_SCHEMA}
+{decision_schema}
 """.strip()

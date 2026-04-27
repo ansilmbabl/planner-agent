@@ -107,6 +107,8 @@ export type SseEvent =
       agent_ids?: string[]
       agent_id?: string | null
       step?: number
+      /** Maps agent id → display name for this council (routing activity). */
+      agent_labels?: Record<string, string>
     }
   | { type: 'synth'; summary: string }
   | { type: 'orchestrator_reply'; content: string }
@@ -315,6 +317,65 @@ export async function putPreferences(body: {
     throw new Error(t || `preferences: ${r.status}`)
   }
   return r.json()
+}
+
+export type BuiltinPromptItem = {
+  key: string
+  category: string
+  title: string
+  description: string
+  content: string
+  is_default: boolean
+}
+
+export async function getBuiltinPrompts(): Promise<BuiltinPromptItem[]> {
+  const r = await fetch(`${API}/builtin-prompts`)
+  if (!r.ok) throw new Error(`builtin-prompts: ${r.status}`)
+  const j = (await r.json()) as { prompts?: BuiltinPromptItem[] }
+  return j.prompts ?? []
+}
+
+export async function putBuiltinPrompt(
+  key: string,
+  content: string
+): Promise<{ status: string; key: string }> {
+  const r = await fetch(`${API}/builtin-prompts`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, content }),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `builtin-prompts: ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function resetBuiltinPrompts(): Promise<{
+  status: string
+  prompts: BuiltinPromptItem[]
+}> {
+  const r = await fetch(`${API}/builtin-prompts/reset`, { method: 'POST' })
+  if (!r.ok) throw new Error(`builtin-prompts reset: ${r.status}`)
+  return r.json()
+}
+
+export async function refinePromptText(body: {
+  current_prompt: string
+  instruction: string
+  context_label?: string
+  model?: string
+}): Promise<{ refined: string; model: string }> {
+  const r = await fetch(`${API}/refine-prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `refine-prompt: ${r.status}`)
+  }
+  return r.json() as Promise<{ refined: string; model: string }>
 }
 
 export type RefinePlanPayload = {

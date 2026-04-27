@@ -22,14 +22,26 @@ from .councils import (
     save_council,
     validate_council_id,
 )
-from .config import get_settings
-from .llm import ollama_list_models, ollama_reachable
+from .config import Settings, get_settings
+from .llm import (
+    _msg_system,
+    _msg_user,
+    complete_chat,
+    ollama_list_models,
+    ollama_reachable,
+)
 from .orchestrator import run_council_pipeline
 from .plan_refine import run_plan_refine
 from .session import CouncilSession, SessionPhase, archive_current_plan
 from .db import make_engine
 from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
 from .user_preferences import load_preferences, save_preferences
+from .prompt_catalog import (
+    PIPELINE_PROMPT_META,
+    list_prompts_for_api,
+    reset_prompt_overrides,
+    save_prompt_override,
+)
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +117,21 @@ class PatchSessionBody(BaseModel):
         ...,
         description="Agent council for subsequent messages (config/councils/{id}.json)",
     )
+
+
+class BuiltinPromptPutBody(BaseModel):
+    key: str = Field(..., min_length=1)
+    content: str = Field(default="", description="Empty string clears override for this key")
+
+
+class RefinePromptBody(BaseModel):
+    current_prompt: str = Field(default="", description="Existing text to improve or replace")
+    instruction: str = Field(..., min_length=1, description="What the user wants changed")
+    context_label: str | None = Field(
+        default=None,
+        description="Short label for the model, e.g. orchestrator system",
+    )
+    model: str | None = Field(default=None, description="LLM id; default from provider settings if empty")
 
 
 class PreferencesBody(BaseModel):
@@ -318,6 +345,72 @@ async def put_preferences_api(body: PreferencesBody) -> dict[str, Any]:
             updates["tavily_api_key"] = v.strip()
     save_preferences(s.sqlite_path.parent, updates)
     return await get_preferences_api()
+
+
+@app.get("/api/builtin-prompts", response_model=None)
+async def get_builtin_prompts() -> dict[str, Any]:
+    s = get_settings()
+    return {"prompts": list_prompts_for_api(s.sqlite_path.parent)}
+
+
+@app.put("/api/builtin-prompts", response_model=None)
+async def put_builtin_prompt(body: BuiltinPromptPutBody) -> dict[str, Any]:
+    valid = {m["key"] for m in PIPELINE_PROMPT_META}
+    if body.key not in valid:
+        raise HTTPException(400, f"Unknown prompt key: {body.key!r}")
+    s = get_settings()
+    save_prompt_override(s.sqlite_path.parent, body.key, body.content)
+    return {"status": "ok", "key": body.key}
+
+
+@app.post("/api/builtin-prompts/reset", response_model=None)
+async def post_builtin_prompts_reset() -> dict[str, Any]:
+    s = get_settings()
+    reset_prompt_overrides(s.sqlite_path.parent)
+    return {"status": "ok", "prompts": list_prompts_for_api(s.sqlite_path.parent)}
+
+
+async def _resolve_refiner_model(settings: Settings, requested: str | None) -> str:
+    m = (requested or "").strip()
+    if m:
+        return m
+    if settings.llm_provider == "ollama":
+        names = await ollama_list_models(settings.ollama_base_url)
+        return names[0] if names else (settings.ollama_model or "").strip() or "llama3.2"
+    if settings.llm_provider == "openai":
+        return (settings.openai_model or "").strip() or "gpt-4o-mini"
+    return (settings.anthropic_model or "").strip() or "claude-3-5-sonnet-20241022"
+
+
+@app.post("/api/refine-prompt", response_model=None)
+async def refine_prompt_api(body: RefinePromptBody) -> dict[str, Any]:
+    settings = get_settings()
+    model = await _resolve_refiner_model(settings, body.model)
+    label = (body.context_label or "prompt block").strip()
+    system = (
+        "You improve prompts and instruction blocks for LLM applications. "
+        "Return ONLY the replacement text—no preamble, no 'Here is', no explanation. "
+        "Do not wrap the answer in markdown fences unless the user explicitly asked for a fenced block."
+    )
+    user = f"""Block role: {label}
+
+--- CURRENT TEXT ---
+{body.current_prompt}
+
+--- USER REQUEST ---
+{body.instruction}
+
+Output the full new text that should replace CURRENT TEXT."""
+    try:
+        out = await complete_chat(
+            settings,
+            [_msg_system(system), _msg_user(user)],
+            model=model,
+            temperature=0.25,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, str(e)) from e
+    return {"refined": (out or "").strip(), "model": model}
 
 
 @app.get("/api/models")

@@ -8,10 +8,8 @@ from typing import Any
 
 from .council_config import AgentDef, CouncilConfigFile
 from .config import Settings
-from .prompts.debate import AGENT_TURN_SCHEMA
 from .prompts.orchestrator import (
     DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
-    ORCHESTRATOR_SYSTEM_JSON_SUFFIX,
     build_orchestrator_user_message,
 )
 from .llm import (
@@ -21,7 +19,8 @@ from .llm import (
     complete_chat,
     complete_structured_json,
 )
-from .plan_model import PlanSpec, plan_spec_json_schema_hint
+from .plan_model import PlanSpec
+from .prompt_catalog import get_prompt
 from .plan_render import render_plan_md
 from .session import (
     ChatMessage,
@@ -64,6 +63,18 @@ def effective_orchestrator(council: CouncilConfigFile) -> AgentDef:
         system_prompt=DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
         tools_enabled=False,
     )
+
+
+def _agent_label_map(council: CouncilConfigFile, debaters: list[AgentDef]) -> dict[str, str]:
+    """Id → display name for routing / activity (orchestrator SSE)."""
+    o = effective_orchestrator(council)
+    m: dict[str, str] = {o.id: o.name}
+    for d in debaters:
+        m[d.id] = d.name
+    if council.synthesizer:
+        s = council.synthesizer
+        m[s.id] = s.name
+    return m
 
 
 def _debater_by_id(debaters: list[AgentDef], agent_id: str) -> AgentDef | None:
@@ -231,7 +242,8 @@ async def _orchestrator_decide(
         instructions=council.orchestrator_user_instructions,
         prefer_research_when_helpful=council.initial_research,
     )
-    system = orch.system_prompt.strip() + ORCHESTRATOR_SYSTEM_JSON_SUFFIX
+    suffix = get_prompt("orchestrator_json_suffix").strip()
+    system = orch.system_prompt.strip() + (suffix or "")
     return await complete_structured_json(settings, system, user, model=model)
 
 
@@ -318,13 +330,12 @@ def _filename_from_title(title: str) -> str:
 async def _generate_search_plan(
     settings: Settings, user_brief: str, model: str
 ) -> dict[str, Any]:
-    system = "You are a research planner. Return JSON only."
+    system = get_prompt("research_planner_system")
+    suffix = get_prompt("research_planner_user_suffix")
     user = f"""User idea:
 {user_brief}
 
-Return JSON: {{"queries": ["q1", ...], "urls_to_fetch": []}}
-- queries: 1-3 short web search queries, or fewer if the idea is fully specified.
-- urls_to_fetch: 0-2 full https URLs to read for context, or [].
+{suffix}
 """
     return await complete_structured_json(settings, system, user, model=model)
 
@@ -378,8 +389,9 @@ async def _summarize_research(
         for f in fetches
         if f.get("ok")
     )
-    system = "You are a research summarizer. Output a tight bullet brief; cite page titles. No JSON."
-    user = f"Idea:\n{user_brief}\n\nSearch results:\n{src_txt}\n\nFetches:\n{fetch_txt or '(none)'}\n\nWrite 5-10 bullets; note assumptions."
+    system = get_prompt("research_summarizer_system")
+    closing = get_prompt("research_summarizer_user_closing")
+    user = f"Idea:\n{user_brief}\n\nSearch results:\n{src_txt}\n\nFetches:\n{fetch_txt or '(none)'}\n\n{closing}"
     return await complete_chat(
         settings,
         [_msg_system(system), _msg_user(user)],
@@ -447,7 +459,7 @@ def _build_agent_user_payload(
 ## This round (agents before you)
 {same_round_prior or '_(none — you are first in this round)_'}
 
-{AGENT_TURN_SCHEMA}
+{get_prompt("debate_turn_schema")}
 """.strip()
 
 
@@ -461,7 +473,7 @@ async def _agent_turn(
     r: int,
     same_round: str,
 ) -> dict[str, Any]:
-    system = agent.system_prompt + "\n" + AGENT_TURN_SCHEMA
+    system = agent.system_prompt + "\n" + get_prompt("debate_turn_schema")
     user = _build_agent_user_payload(
         agent, user_brief, research_brief, prior_summary, r, same_round
     )
@@ -515,16 +527,18 @@ async def _plan_writer(
     *,
     prior_plan_markdown: str | None = None,
 ) -> PlanSpec:
-    system = "You are a planning writer for agentic software. Return JSON only. Use checklist items with done: false."
+    system = get_prompt("plan_writer_system")
     prior = (prior_plan_markdown or "").strip()
     prior_block = (
         f"## Prior plan (revise — user asked for improvements; keep what still applies)\n{prior[:24_000]}"
         if prior
         else "## Prior plan\n_(none — first version)_"
     )
+    schema = get_prompt("plan_json_schema_hint")
+    footer = get_prompt("plan_writer_user_footer")
     user = f"""Create an implementation plan as JSON.
 
-{plan_spec_json_schema_hint()}
+{schema}
 
 ## User request
 {user_brief}
@@ -540,7 +554,7 @@ async def _plan_writer(
 ## Council detail
 {all_turns[:14_000]}
 
-Be specific: file paths, phases, and acceptance-relevant details.
+{footer}
 """
     raw = await complete_structured_json(settings, system, user, model=model)
     return PlanSpec.from_llm_dict(raw)
@@ -641,6 +655,7 @@ async def _orchestrate_discussion_loop(
             "reason": reason,
             "agent_ids": agent_ids,
             "step": step_n,
+            "agent_labels": _agent_label_map(council, debaters),
         }
 
         if action == "ask_user":

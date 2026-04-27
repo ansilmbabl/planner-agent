@@ -8,7 +8,7 @@ from .council_config import AgentDef, CouncilConfigFile
 from .config import Settings
 from .llm import ChatMsg, _msg_system, _msg_user, complete_chat
 from .orchestrator import effective_orchestrator
-from .prompts.plan_refine import PLAN_REFINE_USER_SUFFIX
+from .prompt_catalog import get_prompt
 from .session import (
     ChatMessage,
     CouncilSession,
@@ -111,7 +111,7 @@ def _build_refine_user_message(
             instruction.strip(),
             "--- END INSTRUCTION ---",
             "",
-            PLAN_REFINE_USER_SUFFIX,
+            get_prompt("plan_refine_user_suffix"),
         ]
     )
     return "\n".join(blocks)

@@ -156,3 +156,28 @@ export function uniqueNewAgentId(
   }
   return `agent_${Math.random().toString(36).slice(2, 11)}`
 }
+
+/**
+ * URL-safe id from a display name (used in council JSON and orchestrator routing).
+ * `exceptId` may stay taken by this agent while picking a new slug (rename flow).
+ */
+export function slugAgentId(
+  name: string,
+  taken: Set<string>,
+  exceptId?: string
+): string {
+  let base = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48)
+  if (!base) base = 'agent'
+  const blocked = (id: string) => id !== exceptId && taken.has(id)
+  let cand = base
+  for (let n = 2; blocked(cand) && n < 10_000; n++) {
+    cand = `${base}_${n}`
+  }
+  if (!blocked(cand)) return cand
+  return uniqueNewAgentId(taken, base)
+}
