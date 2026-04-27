@@ -318,12 +318,18 @@ function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
 function formatSessionTime(ts: number) {
   if (!ts) return ''
   const d = new Date(ts * 1000)
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  const now = Date.now()
+  const sec = (now - d.getTime()) / 1000
+  if (sec < 45) return 'now'
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h`
+  if (sec < 604800) return `${Math.floor(sec / 86400)}d`
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function formatSessionTimeTitle(ts: number) {
+  if (!ts) return ''
+  return new Date(ts * 1000).toLocaleString()
 }
 
 function phasePill(phase: string) {
@@ -437,6 +443,35 @@ export default function App() {
   /** When the last run finished, chat send can extend the session instead of wiping it. */
   const [continuePlanFromChat, setContinuePlanFromChat] = useState(true)
 
+  const readLayoutNum = (key: string, fallback: number, min: number, max: number) => {
+    if (typeof window === 'undefined') return fallback
+    const v = localStorage.getItem(key)
+    const n = v ? parseInt(v, 10) : NaN
+    return Number.isFinite(n) && n >= min && n <= max ? n : fallback
+  }
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    readLayoutNum('planner.sidebarWidth', 288, 220, 480)
+  )
+  const [outputsWidth, setOutputsWidth] = useState(() =>
+    readLayoutNum('planner.outputsWidth', 360, 260, 640)
+  )
+  const [layoutNarrow, setLayoutNarrow] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 639px)').matches
+  )
+  const [layoutLg, setLayoutLg] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia('(min-width: 1024px)').matches
+  )
+  const layoutDrag = useRef<
+    | null
+    | { kind: 'sidebar' | 'outputs'; startX: number; startOutputs: number }
+  >(null)
+  const sidebarWidthRef = useRef(sidebarWidth)
+  const outputsWidthRef = useRef(outputsWidth)
+
   const streamAbort = useRef<AbortController | null>(null)
   const planPreviewRef = useRef<HTMLDivElement | null>(null)
   /** Session id for the in-flight /api/.../message stream (if any). */
@@ -449,6 +484,64 @@ export default function App() {
   useEffect(() => {
     viewingSessionIdRef.current = sessionId
   }, [sessionId])
+
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth
+  }, [sidebarWidth])
+  useEffect(() => {
+    outputsWidthRef.current = outputsWidth
+  }, [outputsWidth])
+
+  useEffect(() => {
+    const mqN = window.matchMedia('(max-width: 639px)')
+    const mqL = window.matchMedia('(min-width: 1024px)')
+    const onN = () => setLayoutNarrow(mqN.matches)
+    const onL = () => setLayoutLg(mqL.matches)
+    onN()
+    onL()
+    mqN.addEventListener('change', onN)
+    mqL.addEventListener('change', onL)
+    return () => {
+      mqN.removeEventListener('change', onN)
+      mqL.removeEventListener('change', onL)
+    }
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e: globalThis.MouseEvent) => {
+      const d = layoutDrag.current
+      if (!d) return
+      if (d.kind === 'sidebar') {
+        const w = Math.min(480, Math.max(220, e.clientX))
+        sidebarWidthRef.current = w
+        setSidebarWidth(w)
+      } else {
+        const delta = d.startX - e.clientX
+        const w = Math.min(640, Math.max(260, d.startOutputs + delta))
+        outputsWidthRef.current = w
+        setOutputsWidth(w)
+      }
+    }
+    const onUp = () => {
+      if (layoutDrag.current) {
+        localStorage.setItem(
+          'planner.sidebarWidth',
+          String(sidebarWidthRef.current)
+        )
+        localStorage.setItem(
+          'planner.outputsWidth',
+          String(outputsWidthRef.current)
+        )
+      }
+      layoutDrag.current = null
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   useEffect(() => {
     if (phase === 'done') {
@@ -787,6 +880,7 @@ export default function App() {
       setAwaiting(true)
     } else if (evType === 'done') {
       setAwaiting(false)
+      setPhase('done')
     }
     if (evType === 'phase') {
       setPhase((ev as { phase: string }).phase)
@@ -1040,32 +1134,52 @@ export default function App() {
         />
       )}
 
-      {/* Sidebar — sessions */}
+      {/* Sidebar — sessions (desktop width draggable) */}
       <aside
         id="session-sidebar"
         className={`
-        fixed z-40 inset-y-0 left-0 flex flex-col w-[min(100%,19rem)] border-r border-white/[0.07]
-        bg-[#0e1017]/92 backdrop-blur-xl shadow-2xl shadow-black/40
+        relative fixed z-40 inset-y-0 left-0 flex flex-col border-r border-white/[0.07]
+        bg-[#0b0c10]/95 backdrop-blur-xl shadow-2xl shadow-black/40
         transition-transform duration-200 ease-out motion-reduce:transition-none
-        sm:static sm:z-0 sm:w-[17.5rem] sm:max-h-none sm:shadow-none sm:translate-x-0
+        sm:static sm:z-0 sm:max-h-none sm:shadow-none sm:translate-x-0
+        ${layoutNarrow ? 'w-[min(100%,20rem)]' : ''}
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'}
       `}
+        style={!layoutNarrow ? { width: sidebarWidth } : undefined}
         aria-label="Chat history"
       >
+        {!layoutNarrow && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            className="absolute top-0 right-0 z-20 w-3 -mr-1.5 cursor-col-resize flex justify-center hover:bg-violet-500/10 active:bg-violet-500/20"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              layoutDrag.current = {
+                kind: 'sidebar',
+                startX: e.clientX,
+                startOutputs: outputsWidthRef.current,
+              }
+            }}
+          >
+            <span className="w-px h-full rounded-full bg-white/[0.08] hover:bg-violet-400/50" />
+          </div>
+        )}
         <div className="p-4 border-b border-white/[0.06]">
           <div className="flex items-center gap-3">
             <div
-              className="shrink-0 flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-lg shadow-violet-900/30"
+              className="shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 text-white text-sm font-semibold shadow-md shadow-violet-900/30"
               aria-hidden
             >
-              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
+              P
             </div>
             <div className="min-w-0">
-              <h1 className="text-base font-semibold text-white tracking-tight">Planner</h1>
+              <h1 className="text-[15px] font-semibold text-white tracking-tight">
+                Planner
+              </h1>
               <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                Chats &amp; councils
+                Conversations
               </p>
             </div>
           </div>
@@ -1089,7 +1203,7 @@ export default function App() {
             New chat
           </button>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-3 space-y-1">
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3 space-y-0.5 [scrollbar-gutter:stable]">
           {sessionsLoading && (
             <div className="px-2 py-2 space-y-2" aria-hidden>
               {[1, 2, 3].map((i) => (
@@ -1121,28 +1235,35 @@ export default function App() {
                 tabIndex={0}
                 onClick={() => void openSession(s.id)}
                 onKeyDown={(e) => e.key === 'Enter' && void openSession(s.id)}
+                title={formatSessionTimeTitle(s.updated_ts)}
                 className={`
-                  group w-full text-left rounded-xl px-3 py-2.5 pr-1 flex gap-2 items-start
-                  transition-[background,border] duration-150
-                  focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0e1017]
+                  group w-full text-left rounded-2xl px-2.5 py-2.5 pr-1 flex gap-2.5 items-start
+                  transition-[background,border,box-shadow] duration-150
+                  focus-visible:outline focus-visible:ring-2 focus-visible:ring-violet-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b0c10]
                   ${
                     active
-                      ? 'bg-white/[0.06] border border-violet-500/30'
+                      ? 'bg-slate-800/80 border border-violet-500/35 shadow-[inset_3px_0_0_0_rgba(139,92,246,0.65)]'
                       : 'hover:bg-white/[0.04] border border-transparent'
                   }
                 `}
               >
                 <div
-                  className={`shrink-0 w-0.5 self-stretch rounded-full ${active ? 'bg-violet-400' : 'bg-transparent'}`}
+                  className={`shrink-0 mt-0.5 flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-medium ${
+                    active
+                      ? 'bg-violet-500/25 text-violet-100'
+                      : 'bg-white/[0.06] text-slate-400'
+                  }`}
                   aria-hidden
-                />
+                >
+                  {(s.title || '?').slice(0, 1).toUpperCase()}
+                </div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm text-slate-100 line-clamp-2 font-medium">
+                  <div className="text-[13px] text-slate-100 line-clamp-2 leading-snug">
                     {s.title || 'Untitled'}
                   </div>
                   <div className="flex items-center gap-1.5 mt-1 text-[10px] text-slate-500">
                     <span
-                      className={`rounded px-1 py-0.5 border ${phasePill(s.phase)}`}
+                      className={`rounded-md px-1.5 py-0.5 border ${phasePill(s.phase)}`}
                     >
                       {s.phase}
                     </span>
@@ -1150,12 +1271,12 @@ export default function App() {
                       <span className="text-emerald-400/90">plan</span>
                     )}
                     <span
-                      className="text-slate-600 truncate max-w-[4.5rem]"
+                      className="text-slate-600 truncate max-w-[3.5rem] sm:max-w-[4.5rem]"
                       title="Council"
                     >
                       {s.council_id ?? 'default'}
                     </span>
-                    <span className="ml-auto tabular-nums">
+                    <span className="ml-auto tabular-nums text-slate-500 shrink-0">
                       {formatSessionTime(s.updated_ts)}
                     </span>
                   </div>
@@ -1423,6 +1544,18 @@ export default function App() {
               busy={busy}
               onBack={() => setMainView('council')}
               onOpenSidebar={() => setSidebarOpen(true)}
+              onSessionsBulkDeleted={(ids) => {
+                if (sessionId && ids.includes(sessionId)) {
+                  if (streamOwnerSessionIdRef.current === sessionId) {
+                    stopStream()
+                  }
+                  setSessionId(null)
+                  setSessionCouncilId(null)
+                  setCouncilSelectError(null)
+                  clearWorkspace()
+                }
+                void loadSessionList()
+              }}
             />
           </div>
         ) : (
@@ -1687,9 +1820,33 @@ export default function App() {
             </div>
           </div>
 
+          {layoutLg ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize outputs panel"
+              className="hidden lg:flex w-3 shrink-0 cursor-col-resize items-stretch justify-center group self-stretch min-h-[12rem]"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                layoutDrag.current = {
+                  kind: 'outputs',
+                  startX: e.clientX,
+                  startOutputs: outputsWidthRef.current,
+                }
+              }}
+            >
+              <span className="w-px min-h-full rounded-full bg-white/10 group-hover:bg-violet-400/45 group-active:bg-violet-400/65" />
+            </div>
+          ) : null}
+
           {/* Plan + research panel */}
           <div
-            className="w-full lg:w-[min(100%,22rem)] xl:w-[24rem] shrink-0 flex flex-col min-h-0 max-h-[min(42dvh,22rem)] lg:max-h-none lg:rounded-2xl lg:border lg:border-white/[0.08] lg:bg-[#0c0e14]/50 lg:shadow-xl lg:shadow-black/20 border-t lg:border-t-0 lg:ml-1 overflow-hidden"
+            className="w-full shrink-0 flex flex-col min-h-0 max-h-[min(42dvh,22rem)] lg:max-h-none lg:rounded-2xl lg:border lg:border-white/[0.08] lg:bg-[#0c0e14]/50 lg:shadow-xl lg:shadow-black/20 border-t lg:border-t-0 overflow-hidden"
+            style={
+              layoutLg
+                ? { width: outputsWidth, minWidth: 260, maxWidth: 'min(640px, 50vw)' }
+                : undefined
+            }
             role="complementary"
             aria-label="Research and plan"
           >
@@ -1697,7 +1854,9 @@ export default function App() {
               <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Outputs
               </h2>
-              <p className="text-[11px] text-slate-600 mt-1">Research brief &amp; plan file</p>
+              <p className="text-[11px] text-slate-600 mt-1">
+                Research (DuckDuckGo or Tavily in Settings) &amp; plan
+              </p>
             </div>
             <div
               className="shrink-0 flex p-2 gap-1"
@@ -1779,7 +1938,8 @@ export default function App() {
                 ) : (
                   <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center">
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      No research yet. The orchestrator runs web search when it chooses to.
+                      No research yet. The orchestrator runs web search when it chooses to (DuckDuckGo
+                      or Tavily — set under Settings → Connection).
                     </p>
                   </div>
                 )}

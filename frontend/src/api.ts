@@ -15,6 +15,16 @@ export type HealthResponse = {
   ollama?: OllamaProbe
   /** e.g. "sqlite" — session storage backend */
   persistence?: string
+  research?: {
+    provider: string
+    tavily_ready: boolean
+  }
+}
+
+export type PreferencesResponse = {
+  research_provider: 'duckduckgo' | 'tavily'
+  tavily_key_stored: boolean
+  tavily_key_from_env: boolean
 }
 
 export type ModelsResponse = {
@@ -268,6 +278,43 @@ export async function patchSessionCouncil(
 export async function deleteSessionApi(sessionId: string): Promise<void> {
   const r = await fetch(`${API}/sessions/${sessionId}`, { method: 'DELETE' })
   if (!r.ok) throw new Error(`delete: ${r.status}`)
+}
+
+export async function bulkDeleteSessions(
+  ids: string[]
+): Promise<{ deleted: number; missing: string[] }> {
+  const r = await fetch(`${API}/sessions/bulk-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `bulk-delete: ${r.status}`)
+  }
+  return r.json() as Promise<{ deleted: number; missing: string[] }>
+}
+
+export async function getPreferences(): Promise<PreferencesResponse> {
+  const r = await fetch(`${API}/preferences`)
+  if (!r.ok) throw new Error(`preferences: ${r.status}`)
+  return r.json()
+}
+
+export async function putPreferences(body: {
+  research_provider?: 'duckduckgo' | 'tavily'
+  tavily_api_key?: string
+}): Promise<PreferencesResponse> {
+  const r = await fetch(`${API}/preferences`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `preferences: ${r.status}`)
+  }
+  return r.json()
 }
 
 export type RefinePlanPayload = {

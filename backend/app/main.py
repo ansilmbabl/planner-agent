@@ -29,6 +29,7 @@ from .plan_refine import run_plan_refine
 from .session import CouncilSession, SessionPhase, archive_current_plan
 from .db import make_engine
 from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
+from .user_preferences import load_preferences, save_preferences
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,18 @@ class PatchSessionBody(BaseModel):
         ...,
         description="Agent council for subsequent messages (config/councils/{id}.json)",
     )
+
+
+class PreferencesBody(BaseModel):
+    research_provider: Literal["duckduckgo", "tavily"] | None = None
+    tavily_api_key: str | None = Field(
+        default=None,
+        description="Stored API key for Tavily; empty string clears the stored override",
+    )
+
+
+class BulkDeleteSessionsBody(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
 
 
 def _require_council_for_id(council_id: str) -> CouncilConfigFile:
@@ -260,7 +273,51 @@ async def health() -> dict[str, Any]:
     if settings.llm_provider == "ollama":
         h["ollama"] = await ollama_reachable(settings.ollama_base_url)
     h["persistence"] = "sqlite"
+    prefs = load_preferences(settings.sqlite_path.parent)
+    rp = str(prefs.get("research_provider") or settings.research_provider or "duckduckgo")
+    if rp not in ("duckduckgo", "tavily"):
+        rp = "duckduckgo"
+    tkey = str(prefs.get("tavily_api_key") or settings.tavily_api_key or "").strip()
+    h["research"] = {
+        "provider": rp,
+        "tavily_ready": rp != "tavily" or bool(tkey),
+    }
     return h
+
+
+@app.get("/api/preferences")
+async def get_preferences_api() -> dict[str, Any]:
+    s = get_settings()
+    p = load_preferences(s.sqlite_path.parent)
+    prov = str(p.get("research_provider") or s.research_provider or "duckduckgo")
+    if prov not in ("duckduckgo", "tavily"):
+        prov = "duckduckgo"
+    fkey = str(p.get("tavily_api_key") or "").strip()
+    ekey = str(s.tavily_api_key or "").strip()
+    return {
+        "research_provider": prov,
+        "tavily_key_stored": bool(fkey),
+        "tavily_key_from_env": bool(ekey),
+    }
+
+
+@app.put("/api/preferences")
+async def put_preferences_api(body: PreferencesBody) -> dict[str, Any]:
+    s = get_settings()
+    raw = body.model_dump(exclude_unset=True)
+    updates: dict[str, Any] = {}
+    if "research_provider" in raw and raw["research_provider"] is not None:
+        updates["research_provider"] = raw["research_provider"]
+    if "tavily_api_key" in raw:
+        v = raw["tavily_api_key"]
+        if v is None:
+            pass
+        elif isinstance(v, str) and not v.strip():
+            updates["tavily_api_key"] = None
+        elif isinstance(v, str):
+            updates["tavily_api_key"] = v.strip()
+    save_preferences(s.sqlite_path.parent, updates)
+    return await get_preferences_api()
 
 
 @app.get("/api/models")
@@ -338,6 +395,23 @@ async def delete_session(session_id: str) -> dict[str, bool]:
         raise HTTPException(404, "Session not found")
     ok = store.delete(session_id)
     return {"deleted": ok}
+
+
+@app.post("/api/sessions/bulk-delete")
+async def bulk_delete_sessions(body: BulkDeleteSessionsBody) -> dict[str, Any]:
+    deleted = 0
+    missing: list[str] = []
+    seen: set[str] = set()
+    for raw_id in body.ids:
+        sid = str(raw_id or "").strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        if store.delete(sid):
+            deleted += 1
+        else:
+            missing.append(sid)
+    return {"deleted": deleted, "missing": missing}
 
 
 @app.get("/api/sessions/{session_id}")

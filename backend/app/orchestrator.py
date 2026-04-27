@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Any
@@ -30,7 +31,10 @@ from .session import (
     archive_current_plan,
 )
 from .tools.fetch_url import fetch_url_text
-from .tools.search import ddg_search
+from .tools.search import ddg_search, tavily_search
+from .user_preferences import load_preferences
+
+log = logging.getLogger(__name__)
 
 RESEARCH_PENDING_PLACEHOLDER = (
     "_(No web research yet for this message — the orchestrator may choose `run_research` next, "
@@ -325,10 +329,27 @@ Return JSON: {{"queries": ["q1", ...], "urls_to_fetch": []}}
     return await complete_structured_json(settings, system, user, model=model)
 
 
+def _effective_research_provider(settings: Settings) -> tuple[str, str]:
+    prefs = load_preferences(settings.sqlite_path.parent)
+    raw = str(prefs.get("research_provider") or "").strip().lower()
+    base = str(settings.research_provider or "duckduckgo").strip().lower()
+    provider = raw if raw in ("duckduckgo", "tavily") else base
+    if provider not in ("duckduckgo", "tavily"):
+        provider = "duckduckgo"
+    key = str(prefs.get("tavily_api_key") or settings.tavily_api_key or "").strip()
+    return provider, key
+
+
 def _search_only(settings: Settings, queries: list[str]) -> list[dict[str, str]]:
+    provider, tavily_key = _effective_research_provider(settings)
     all_rows: list[dict[str, str]] = []
     for q in queries[: settings.research_max_queries]:
-        all_rows.extend(ddg_search(q, max_results=3))
+        if provider == "tavily" and tavily_key:
+            all_rows.extend(tavily_search(tavily_key, q, max_results=3))
+        else:
+            if provider == "tavily" and not tavily_key:
+                log.warning("research_provider=tavily but no API key; using DuckDuckGo")
+            all_rows.extend(ddg_search(q, max_results=3))
     seen: set[str] = set()
     unique: list[dict[str, str]] = []
     for r in all_rows:

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
 
     councils_dir: Path = Path(__file__).resolve().parents[2] / "config" / "councils"
     research_max_queries: int = 3
+    """Web search backend for council research (overridable via preferences.json API)."""
+    research_provider: Literal["duckduckgo", "tavily"] = "duckduckgo"
+    tavily_api_key: str | None = None
     discussion_rounds: int = 2
     orchestration_max_steps: int = 24
     orchestration_max_parallel_agents: int = 6
