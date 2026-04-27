@@ -16,6 +16,27 @@ from .session import (
 log = logging.getLogger(__name__)
 
 
+def _reference_urls_from_dict(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for x in raw:
+        if not isinstance(x, dict):
+            continue
+        url = str(x.get("url") or "").strip()
+        if not url:
+            continue
+        pl = str(x.get("placement") or "session_start")
+        if pl not in ("session_start", "after_research", "before_artifact"):
+            pl = "session_start"
+        row: dict[str, Any] = {"url": url, "placement": pl}
+        lab = x.get("label")
+        if isinstance(lab, str) and lab.strip():
+            row["label"] = lab.strip()
+        out.append(row)
+    return out
+
+
 def _msg_to_dict(m: ChatMessage) -> dict[str, Any]:
     return {
         "role": m.role,
@@ -69,6 +90,8 @@ def session_to_dict(s: CouncilSession) -> dict[str, Any]:
         "skip_implementation_plan": bool(
             getattr(s, "skip_implementation_plan", False)
         ),
+        "artifact_kind": str(getattr(s, "artifact_kind", "") or ""),
+        "reference_urls": list(getattr(s, "reference_urls", None) or []),
     }
 
 
@@ -126,6 +149,8 @@ def session_from_dict(d: dict[str, Any]) -> CouncilSession:
         synthesizer_ran=bool(d.get("synthesizer_ran", False)),
         last_synth_summary=str(d.get("last_synth_summary") or ""),
         skip_implementation_plan=bool(d.get("skip_implementation_plan", False)),
+        artifact_kind=str(d.get("artifact_kind") or ""),
+        reference_urls=_reference_urls_from_dict(d.get("reference_urls")),
     )
 
 

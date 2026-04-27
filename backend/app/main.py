@@ -12,7 +12,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .council_config import CouncilConfigFile, load_council_config, save_council_config
+from .council_config import (
+    CouncilConfigFile,
+    ReferenceUrl,
+    load_council_config,
+    save_council_config,
+)
 from .councils import (
     delete_council,
     ensure_default_council_file,
@@ -113,9 +118,13 @@ class RefinePlanBody(BaseModel):
 
 
 class PatchSessionBody(BaseModel):
-    council_id: str = Field(
-        ...,
+    council_id: str | None = Field(
+        default=None,
         description="Agent council for subsequent messages (config/councils/{id}.json)",
+    )
+    reference_urls: list[ReferenceUrl] | None = Field(
+        default=None,
+        description="Per-chat URLs to fetch into the research / context brief (same area as web search results).",
     )
 
 
@@ -527,6 +536,8 @@ async def get_session(session_id: str) -> dict[str, Any]:
         "pending_user_questions": sess.pending_user_questions,
         "plan_markdown": sess.plan_markdown,
         "plan_filename": sess.plan_filename,
+        "artifact_kind": str(getattr(sess, "artifact_kind", "") or ""),
+        "reference_urls": list(getattr(sess, "reference_urls", None) or []),
         "plan_versions": list(getattr(sess, "plan_versions", None) or []),
         "error_message": sess.error_message,
         "messages": [
@@ -547,16 +558,30 @@ async def patch_session(session_id: str, body: PatchSessionBody) -> dict[str, An
     sess = store.get(session_id)
     if not sess:
         raise HTTPException(404, "Session not found")
-    cid = (body.council_id or "default").strip() or "default"
-    if not validate_council_id(cid):
+    if body.council_id is None and body.reference_urls is None:
         raise HTTPException(
             400,
-            "Invalid council_id (use a–z, 0–9, _ or -, max 64 chars)",
+            "Provide council_id and/or reference_urls",
         )
-    _require_council_for_id(cid)
-    sess.council_id = cid
+    if body.council_id is not None:
+        cid = (body.council_id or "default").strip() or "default"
+        if not validate_council_id(cid):
+            raise HTTPException(
+                400,
+                "Invalid council_id (use a–z, 0–9, _ or -, max 64 chars)",
+            )
+        _require_council_for_id(cid)
+        sess.council_id = cid
+    if body.reference_urls is not None:
+        sess.reference_urls = [
+            r.model_dump(mode="json", exclude_none=True) for r in body.reference_urls
+        ]
     store.save(sess)
-    return {"id": sess.id, "council_id": sess.council_id}
+    return {
+        "id": sess.id,
+        "council_id": sess.council_id,
+        "reference_urls": list(getattr(sess, "reference_urls", None) or []),
+    }
 
 
 @app.post("/api/sessions/{session_id}/message", response_class=StreamingResponse)
@@ -584,6 +609,7 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
                 archive_current_plan(sess, "before_continue_chat")
             sess.phase = SessionPhase.idle
             sess.plan_markdown = ""
+            sess.artifact_kind = ""
             sess.agent_turns = []
             sess.pending_user_questions = []
             sess.user_answered_clarification = False
@@ -603,6 +629,7 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
             sess.agent_turns = []
             sess.messages = []
             sess.plan_markdown = ""
+            sess.artifact_kind = ""
             sess.pending_user_questions = []
             sess.user_answered_clarification = False
             sess.error_message = None
@@ -658,10 +685,10 @@ async def refine_plan_stream(session_id: str, body: RefinePlanBody) -> Streaming
     if sess.phase != SessionPhase.done:
         raise HTTPException(
             409,
-            f"Plan refine runs only after a completed council (phase is {sess.phase.value}, expected done).",
+            f"Output refine runs only after a completed council (phase is {sess.phase.value}, expected done).",
         )
     if not (sess.plan_markdown or "").strip():
-        raise HTTPException(400, "No plan content to refine")
+        raise HTTPException(400, "No artifact content to refine")
     c = _require_council_for_id(
         (getattr(sess, "council_id", None) or "default").strip() or "default"
     )

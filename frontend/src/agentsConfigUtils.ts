@@ -1,4 +1,4 @@
-import type { AgentDef, CouncilConfig } from './api'
+import type { AgentDef, CouncilConfig, OutputMode } from './api'
 
 const DEFAULT_SYNTH: AgentDef = {
   id: 'synthesizer',
@@ -14,7 +14,7 @@ export const DEFAULT_ORCHESTRATOR_AGENT: AgentDef = {
   name: 'Orchestrator',
   title: 'Routing and flow',
   system_prompt:
-    'You are the Council Orchestrator. Choose exactly ONE next step for the planning workflow. Do not debate product details yourself.',
+    'You are the Council Orchestrator. Choose exactly ONE next step for the multi-agent workflow (research, specialists, synthesizer, user questions, or finishing). Route only; do not role-play as a specialist.',
   tools_enabled: false,
 }
 
@@ -24,6 +24,11 @@ export function defaultSynthesizer(): AgentDef {
 
 /** Normalize optional council fields so the settings UI always has orchestrator + instructions string. */
 export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
+  const om: OutputMode =
+    c.output_mode &&
+    ['plan', 'report', 'code', 'conversation', 'none'].includes(c.output_mode)
+      ? c.output_mode
+      : 'plan'
   return {
     ...c,
     initial_research: c.initial_research !== false,
@@ -31,6 +36,9 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
     synthesizer: c.synthesizer ?? null,
     orchestrator: c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT,
     orchestrator_user_instructions: c.orchestrator_user_instructions ?? '',
+    output_mode: om,
+    output_instructions: c.output_instructions ?? '',
+    artifact_filename: c.artifact_filename ?? '',
   }
 }
 
@@ -106,6 +114,24 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     initial_research = o.initial_research
   }
 
+  let output_mode: OutputMode | undefined
+  if (
+    typeof o.output_mode === 'string' &&
+    ['plan', 'report', 'code', 'conversation', 'none'].includes(o.output_mode)
+  ) {
+    output_mode = o.output_mode as OutputMode
+  }
+
+  let output_instructions: string | undefined
+  if (typeof o.output_instructions === 'string') {
+    output_instructions = o.output_instructions
+  }
+
+  let artifact_filename: string | undefined
+  if (typeof o.artifact_filename === 'string') {
+    artifact_filename = o.artifact_filename
+  }
+
   return {
     debating_agents: debaters,
     synthesizer,
@@ -114,6 +140,9 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
       ? { orchestrator_user_instructions }
       : {}),
     ...(initial_research !== undefined ? { initial_research } : {}),
+    ...(output_mode !== undefined ? { output_mode } : {}),
+    ...(output_instructions !== undefined ? { output_instructions } : {}),
+    ...(artifact_filename !== undefined ? { artifact_filename } : {}),
   }
 }
 
@@ -133,6 +162,16 @@ export function councilConfigToJsonString(c: CouncilConfig): string {
   if (c.orchestrator) o.orchestrator = c.orchestrator
   if (c.orchestrator_user_instructions?.trim()) {
     o.orchestrator_user_instructions = c.orchestrator_user_instructions.trim()
+  }
+  const om = c.output_mode ?? 'plan'
+  if (om !== 'plan') {
+    o.output_mode = om
+  }
+  if (c.output_instructions?.trim()) {
+    o.output_instructions = c.output_instructions.trim()
+  }
+  if (c.artifact_filename?.trim()) {
+    o.artifact_filename = c.artifact_filename.trim()
   }
   o.debating_agents = c.debating_agents
   o.synthesizer = c.synthesizer

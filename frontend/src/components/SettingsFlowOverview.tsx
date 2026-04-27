@@ -6,8 +6,9 @@ export function SettingsFlowOverview() {
         <p className="text-sm text-slate-400 mt-2 leading-relaxed">
           You chat on the left; the <span className="text-slate-200">council</span> is a scripted pipeline behind
           the scenes. The <span className="text-slate-200">orchestrator</span> decides each step; specialists only
-          run when it picks them. The <span className="text-slate-200">Plan</span> panel shows{' '}
-          <code className="text-slate-500">plan.md</code> when the run reaches planning.
+          run when it picks them. The <span className="text-slate-200">Output</span> panel shows the council&apos;s
+          primary deliverable — plan, report, code, nil, or chat-only. In the main window, open Outputs →
+          Research to add your own URLs; they are fetched into the same research brief as web search.
         </p>
       </div>
 
@@ -15,11 +16,11 @@ export function SettingsFlowOverview() {
         <div className="flex flex-col gap-3">
           {[
             { n: '1', t: 'Message', d: 'Your idea lands in the session; optional web research if the orchestrator chooses it.' },
-            { n: '2', t: 'Orchestrator loop', d: 'Each step: model reads transcript + research + roster → JSON action (call agents, ask you, synthesizer, ready for plan…).' },
+            { n: '2', t: 'Orchestrator loop', d: 'Each step: model reads transcript + research + roster → JSON action (call agents, ask you, synthesizer, ready for artifact…).' },
             { n: '3', t: 'Specialists', d: 'Parallel JSON “turns” (reaction, planner note, optional question). Order is orchestrator-driven, not a fixed round-robin.' },
             { n: '4', t: 'Synthesizer (optional)', d: 'One alignment pass before planning if configured and called.' },
-            { n: '5', t: 'Plan writer', d: 'Builds structured plan JSON → rendered as plan.md. Separate from live chat wording.' },
-            { n: '6', t: 'Plan refine', d: 'Optional: Plan tab asks an LLM to edit plan.md using persona prompts + your instruction.' },
+            { n: '5', t: 'Primary output', d: 'Depending on council settings: structured plan, markdown report, code file, or no file (conversation-only).' },
+            { n: '6', t: 'Refine output', d: 'Optional: Output tab — LLM edit of the latest file using merged persona prompts + your instruction.' },
           ].map((row) => (
             <div
               key={row.n}

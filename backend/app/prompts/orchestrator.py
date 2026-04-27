@@ -15,13 +15,13 @@ DEFAULT_ORCHESTRATOR_USER_INSTRUCTIONS = """How to choose the next step:
 - orchestrator_done: end this turn without writing plan.md (immediately after a sufficient orchestrator_reply, or when no plan is needed).
 - call_synthesizer: once enough debate exists to align views, before final planning (only if a synthesizer is available and has not run yet).
 - ask_user: only for blocking ambiguities that must not be assumed; provide 1-3 concrete questions.
-- ready_for_plan: when the user wants a concrete implementation plan and the council is ready to write plan.md.
+- ready_for_plan: when the council should produce its configured primary output (plan, report, or code — see council settings), or when debate is sufficient to write that output.
 - Legacy: `call_agent` with `agent_id` is treated like `call_agents` with a single id."""
 
 ORCH_DECISION_SCHEMA = """
 Return JSON only:
 {
-  "action": "call_agents" | "call_agent" | "run_research" | "orchestrator_reply" | "orchestrator_done" | "call_synthesizer" | "ask_user" | "ready_for_plan",
+  "action": "call_agents" | "call_agent" | "run_research" | "orchestrator_reply" | "orchestrator_done" | "call_synthesizer" | "ask_user" | "ready_for_plan" | "ready_for_artifact",
   "agent_ids": null or non-empty array of distinct strings (for call_agents; each must be a listed id),
   "agent_id": null or string (legacy for call_agent only; same as agent_ids with one element),
   "questions": null or array of 1-3 strings (for ask_user),

@@ -73,6 +73,30 @@ PIPELINE_PROMPT_META: list[PromptMeta] = [
         ),
     },
     {
+        "key": "artifact_report_system",
+        "category": "Artifact — report",
+        "title": "Report writer — system message",
+        "description": "Used when council output_mode is report; produces markdown prose.",
+    },
+    {
+        "key": "artifact_report_user_suffix",
+        "category": "Artifact — report",
+        "title": "Report writer — closing rules",
+        "description": "Appended after transcript and research in the report user message.",
+    },
+    {
+        "key": "artifact_code_system",
+        "category": "Artifact — code",
+        "title": "Code writer — system message",
+        "description": "Used when council output_mode is code; single-file body, no chit-chat.",
+    },
+    {
+        "key": "artifact_code_user_suffix",
+        "category": "Artifact — code",
+        "title": "Code writer — closing rules",
+        "description": "Appended after context in the code generation user message.",
+    },
+    {
         "key": "plan_refine_user_suffix",
         "category": "Plan refine",
         "title": "Refine plan — output rules (user message tail)",
@@ -137,6 +161,21 @@ def _defaults() -> dict[str, str]:
         ),
         "research_summarizer_user_closing": (
             "Write 5-10 bullets; note assumptions."
+        ),
+        "artifact_report_system": (
+            "You write clear, well-structured Markdown reports for technical readers. "
+            "No JSON. Use headings, bullets, and short paragraphs."
+        ),
+        "artifact_report_user_suffix": (
+            "Deliver a complete report in Markdown. Cite constraints from the research brief. "
+            "End with open questions or risks if relevant."
+        ),
+        "artifact_code_system": (
+            "You output a single program or script as raw source code only. "
+            "No markdown fences, no explanation before or after the code unless the user instructions require it."
+        ),
+        "artifact_code_user_suffix": (
+            "Output only the file body. Use the filename hint only for language choice if helpful."
         ),
     }
 

@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type Dispatch,
+  type SetStateAction,
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -19,6 +21,7 @@ import {
   type AgentDef,
   type BuiltinPromptItem,
   type CouncilConfig,
+  type OutputMode,
 } from '../api'
 import {
   councilConfigToJsonString,
@@ -189,6 +192,97 @@ function nextSelection(
 }
 
 const NEW_COUNCIL_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
+const OUTPUT_MODES: { value: OutputMode; label: string; hint: string }[] = [
+  {
+    value: 'plan',
+    label: 'Implementation plan',
+    hint: 'Structured JSON → markdown (phases, checklist).',
+  },
+  {
+    value: 'report',
+    label: 'Report',
+    hint: 'Prose markdown document from council context.',
+  },
+  { value: 'code', label: 'Code file', hint: 'Single source file body for download.' },
+  {
+    value: 'conversation',
+    label: 'Conversation only',
+    hint: 'No file; finish with orchestrator_done when done.',
+  },
+  {
+    value: 'none',
+    label: 'Nil (no output)',
+    hint: 'No primary file; run ends after discussion without an artifact step.',
+  },
+]
+
+function CouncilOutputSettings({
+  config,
+  setConfig,
+}: {
+  config: CouncilConfig
+  setConfig: Dispatch<SetStateAction<CouncilConfig | null>>
+}) {
+  const merged = mergeCouncilDefaults(config)
+
+  return (
+    <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-b from-emerald-950/20 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-emerald-200/95">Primary output</h3>
+        <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
+          Define what the run produces after orchestration. URLs you want in the research brief are set in
+          the main chat under Outputs → Research, not here.
+        </p>
+      </div>
+      <label className="block text-xs text-slate-400 max-w-xl">
+        Primary output
+        <select
+          className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+          value={merged.output_mode ?? 'plan'}
+          onChange={(e) =>
+            setConfig((c) =>
+              c ? { ...c, output_mode: e.target.value as OutputMode } : c
+            )
+          }
+        >
+          {OUTPUT_MODES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label} — {m.hint}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-xs text-slate-400 max-w-2xl">
+        Output instructions (report / code)
+        <textarea
+          className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500/40 min-h-[4rem] font-mono text-[13px]"
+          placeholder="Audience, sections, programming language, style…"
+          value={merged.output_instructions ?? ''}
+          onChange={(e) =>
+            setConfig((c) =>
+              c ? { ...c, output_instructions: e.target.value } : c
+            )
+          }
+        />
+      </label>
+      <label className="block text-xs text-slate-400 max-w-md">
+        Artifact filename (optional)
+        <input
+          type="text"
+          className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+          placeholder="e.g. report.md, main.py"
+          value={merged.artifact_filename ?? ''}
+          onChange={(e) =>
+            setConfig((c) =>
+              c ? { ...c, artifact_filename: e.target.value } : c
+            )
+          }
+        />
+      </label>
+    </div>
+  )
+}
 
 function PipelineBuiltinPrompts({
   refineModels,
@@ -883,6 +977,9 @@ export function AgentsTab({
         ...normalized,
         orchestrator_user_instructions:
           normalized.orchestrator_user_instructions?.trim() || undefined,
+        output_instructions:
+          normalized.output_instructions?.trim() || undefined,
+        artifact_filename: normalized.artifact_filename?.trim() || undefined,
         ...(normalized.initial_research === false
           ? { initial_research: false }
           : {}),
@@ -1189,6 +1286,10 @@ export function AgentsTab({
           />
         </div>
       </div>
+      )}
+
+      {showCouncilToolbar && config && (
+        <CouncilOutputSettings config={config} setConfig={setConfig} />
       )}
 
       {showAgents && (

@@ -61,6 +61,10 @@ class CouncilSession:
     last_synth_summary: str = ""
     # When True after orchestration, skip synthesizer + plan.md and end after chat.
     skip_implementation_plan: bool = False
+    # plan | report | code | conversation | none — what the last run produced (or conversation-only).
+    artifact_kind: str = ""
+    # Per-session URLs merged into research_brief (see orchestrator); not council config.
+    reference_urls: list[dict[str, Any]] = field(default_factory=list)
 
 
 def new_session_id() -> str:

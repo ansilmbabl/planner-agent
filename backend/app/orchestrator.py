@@ -6,7 +6,7 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any
 
-from .council_config import AgentDef, CouncilConfigFile
+from .council_config import AgentDef, CouncilConfigFile, ReferenceUrl
 from .config import Settings
 from .prompts.orchestrator import (
     DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT,
@@ -50,6 +50,142 @@ def council_prompt_brief(s: CouncilSession) -> str:
     return (
         f"{base}\n\n---\n**User follow-up (incorporate into the revised plan):**\n{extra}\n"
     )
+
+
+def _council_output_mode(council: CouncilConfigFile) -> str:
+    m = (getattr(council, "output_mode", None) or "plan").strip().lower()
+    if m not in ("plan", "report", "code", "conversation", "none"):
+        return "plan"
+    return m
+
+
+def _session_reference_entries(s: CouncilSession, placement: str) -> list[ReferenceUrl]:
+    raw = getattr(s, "reference_urls", None) or []
+    out: list[ReferenceUrl] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            r = ReferenceUrl.model_validate(item)
+        except Exception:  # noqa: BLE001
+            continue
+        if r.placement == placement:
+            out.append(r)
+    return out
+
+
+async def _inject_reference_urls(
+    settings: Settings,
+    s: CouncilSession,
+    placement: str,
+) -> None:
+    refs = _session_reference_entries(s, placement)
+    if not refs:
+        return
+    blocks: list[str] = []
+    for r in refs:
+        u = (r.url or "").strip()
+        label = (r.label or u).strip() or u
+        res = await fetch_url_text(u, settings)
+        if res.get("ok"):
+            ex = str(res.get("excerpt") or "")[:12_000]
+            blocks.append(f"### {label}\nSource: {u}\n\n{ex}")
+        else:
+            err = str(res.get("error") or res.get("detail") or "fetch failed")
+            blocks.append(f"### {label}\nSource: {u}\n\n_(Could not fetch: {err})_")
+    extra = "\n\n".join(blocks)
+    header = f"## Research URLs you added ({placement})\n\n"
+    cur = (s.research_brief or "").strip()
+    chunk = header + extra
+    s.research_brief = f"{cur}\n\n{chunk}".strip() if cur else chunk.strip()
+
+
+def _strip_outer_code_fence(text: str) -> str:
+    t = (text or "").strip()
+    m = re.match(r"^```(?:\w+)?\s*\r?\n([\s\S]*?)\r?\n```\s*$", t)
+    if m:
+        return m.group(1).strip()
+    return t
+
+
+async def _artifact_report_writer(
+    settings: Settings,
+    model: str,
+    user_brief: str,
+    research_brief: str,
+    syn_text: str,
+    all_turns: str,
+    extra: str | None,
+) -> str:
+    system = get_prompt("artifact_report_system")
+    suffix = get_prompt("artifact_report_user_suffix")
+    parts = [
+        "## Task context",
+        f"User / council brief:\n{user_brief[:8000]}",
+        f"\n## Research & references\n{research_brief[:12000]}",
+        f"\n## Alignment summary\n{syn_text[:6000]}",
+        f"\n## Council transcript\n{all_turns[:14000]}",
+    ]
+    if (extra or "").strip():
+        parts.append(f"\n## Output instructions\n{str(extra).strip()[:4000]}")
+    parts.append(f"\n## Requirements\n{suffix}")
+    user = "\n".join(parts)
+    return (
+        await complete_chat(
+            settings,
+            [_msg_system(system), _msg_user(user)],
+            model=model,
+            temperature=0.25,
+        )
+    ).strip()
+
+
+async def _artifact_code_writer(
+    settings: Settings,
+    model: str,
+    user_brief: str,
+    research_brief: str,
+    syn_text: str,
+    all_turns: str,
+    extra: str | None,
+    filename_hint: str,
+) -> str:
+    system = get_prompt("artifact_code_system")
+    suffix = get_prompt("artifact_code_user_suffix")
+    parts = [
+        f"Target filename hint: {filename_hint or 'output'}",
+        f"\nUser / council brief:\n{user_brief[:8000]}",
+        f"\nResearch & references:\n{research_brief[:12000]}",
+        f"\nAlignment:\n{syn_text[:4000]}",
+        f"\nCouncil notes:\n{all_turns[:12000]}",
+    ]
+    if (extra or "").strip():
+        parts.append(f"\nInstructions:\n{str(extra).strip()[:4000]}")
+    parts.append(f"\n{suffix}")
+    user = "\n".join(parts)
+    raw = await complete_chat(
+        settings,
+        [_msg_system(system), _msg_user(user)],
+        model=model,
+        temperature=0.15,
+    )
+    return _strip_outer_code_fence(raw)
+
+
+def _artifact_filename_for_mode(council: CouncilConfigFile, mode: str, spec_title: str = "") -> str:
+    hint = (council.artifact_filename or "").strip()
+    if hint:
+        return hint
+    if mode == "report":
+        return "report.md"
+    if mode == "code":
+        return "output.txt"
+    t = (spec_title or "").strip()
+    if t:
+        return _filename_from_title(t)
+    return "plan.md"
 
 
 def effective_orchestrator(council: CouncilConfigFile) -> AgentDef:
@@ -130,6 +266,9 @@ def _normalize_orch_decision(
         "finish": "ready_for_plan",
         "done": "ready_for_plan",
         "write_plan": "ready_for_plan",
+        "ready_for_artifact": "ready_for_plan",
+        "artifact": "ready_for_plan",
+        "write_output": "ready_for_plan",
         "reply": "orchestrator_reply",
         "answer": "orchestrator_reply",
         "direct_reply": "orchestrator_reply",
@@ -716,6 +855,7 @@ async def _orchestrate_discussion_loop(
 
         if action == "run_research":
             await _run_web_research_phase(settings, s)
+            await _inject_reference_urls(settings, s, "after_research")
             s.messages.append(
                 ChatMessage(
                     role="assistant",
@@ -815,6 +955,7 @@ async def run_council_pipeline(
     s = session
     s.error_message = None
     s.skip_implementation_plan = False
+    s.artifact_kind = ""
     debaters = council.debating_agents
     orch = effective_orchestrator(council)
 
@@ -881,6 +1022,7 @@ async def run_council_pipeline(
 
                 s.research_sources = []
                 s.research_brief = RESEARCH_PENDING_PLACEHOLDER
+                await _inject_reference_urls(settings, s, "session_start")
                 s.phase = SessionPhase.discussion
                 yield {
                     "type": "phase",
@@ -904,8 +1046,21 @@ async def run_council_pipeline(
         return
 
     if s.skip_implementation_plan:
-        s.phase = SessionPhase.done
         s.plan_iteration_message = ""
+        mode_done = _council_output_mode(council)
+        if mode_done == "conversation":
+            s.artifact_kind = "conversation"
+        else:
+            s.artifact_kind = "none"
+        s.phase = SessionPhase.done
+        yield {"type": "done"}
+        return
+
+    mode = _council_output_mode(council)
+    if mode in ("conversation", "none"):
+        s.artifact_kind = mode
+        s.plan_iteration_message = ""
+        s.phase = SessionPhase.done
         yield {"type": "done"}
         return
 
@@ -919,35 +1074,82 @@ async def run_council_pipeline(
         if council.synthesizer and not syn_text:
             syn_text = "No synthesizer; see council detail."
 
+        await _inject_reference_urls(settings, s, "before_artifact")
+
+        phase_msgs = {
+            "plan": "Writing implementation plan",
+            "report": "Writing report",
+            "code": "Writing code file",
+        }
         s.phase = SessionPhase.plan
         yield {
             "type": "phase",
             "phase": SessionPhase.plan.value,
-            "message": "Writing plan.md",
+            "message": phase_msgs.get(mode, "Writing output"),
         }
         prior_md: str | None = None
         if (getattr(s, "plan_iteration_message", None) or "").strip() and s.plan_versions:
             prior_md = str(s.plan_versions[-1].get("markdown") or "").strip() or None
-        spec = await _plan_writer(
-            settings,
-            s.model,
-            council_prompt_brief(s),
-            s.research_brief,
-            syn_text,
-            all_turns_txt,
-            prior_plan_markdown=prior_md,
-        )
-        s.plan_markdown = render_plan_md(spec)
-        s.plan_filename = _filename_from_title(spec.title)
+        out_extra = (council.output_instructions or "").strip() or None
+
+        if mode == "plan":
+            spec = await _plan_writer(
+                settings,
+                s.model,
+                council_prompt_brief(s),
+                s.research_brief,
+                syn_text,
+                all_turns_txt,
+                prior_plan_markdown=prior_md,
+            )
+            s.plan_markdown = render_plan_md(spec)
+            s.plan_filename = _artifact_filename_for_mode(council, mode, spec.title)
+            s.artifact_kind = "plan"
+            assistant_msg = f"`{s.plan_filename}` is ready. Download below."
+            agent_name = "Planner"
+        elif mode == "report":
+            s.plan_markdown = await _artifact_report_writer(
+                settings,
+                s.model,
+                council_prompt_brief(s),
+                s.research_brief,
+                syn_text,
+                all_turns_txt,
+                out_extra,
+            )
+            s.plan_filename = _artifact_filename_for_mode(council, mode)
+            s.artifact_kind = "report"
+            assistant_msg = f"Report `{s.plan_filename}` is ready."
+            agent_name = "Report writer"
+        else:
+            fn_hint = (council.artifact_filename or "").strip() or "output.txt"
+            s.plan_markdown = await _artifact_code_writer(
+                settings,
+                s.model,
+                council_prompt_brief(s),
+                s.research_brief,
+                syn_text,
+                all_turns_txt,
+                out_extra,
+                fn_hint,
+            )
+            s.plan_filename = _artifact_filename_for_mode(council, mode)
+            s.artifact_kind = "code"
+            assistant_msg = f"Code file `{s.plan_filename}` is ready."
+            agent_name = "Code writer"
+
         s.plan_iteration_message = ""
         s.phase = SessionPhase.done
         s.messages.append(
             ChatMessage(
                 role="assistant",
-                content="`plan.md` is ready. Download below.",
-                agent_id="planner",
-                agent_name="Planner",
-                meta={"filename": s.plan_filename},
+                content=assistant_msg,
+                agent_id="artifact",
+                agent_name=agent_name,
+                meta={
+                    "filename": s.plan_filename,
+                    "artifact_kind": s.artifact_kind,
+                },
             )
         )
         yield {
@@ -955,6 +1157,7 @@ async def run_council_pipeline(
             "content": s.plan_markdown,
             "filename": s.plan_filename,
             "plan_versions": list(getattr(s, "plan_versions", None) or []),
+            "artifact_kind": s.artifact_kind,
         }
         yield {"type": "done"}
     except Exception as e:  # noqa: BLE001

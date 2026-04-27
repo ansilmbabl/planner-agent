@@ -15,7 +15,8 @@ import {
   getSession,
   listCouncils,
   listSessions,
-  patchSessionCouncil,
+  patchSession,
+  type ReferenceUrl,
   type CouncilConfig,
   type HealthResponse,
   type PlanVersion,
@@ -41,6 +42,33 @@ type FeedItem = {
 
 function simpleId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+const RESEARCH_URL_PLACEMENTS: {
+  value: ReferenceUrl['placement']
+  label: string
+}[] = [
+  { value: 'session_start', label: 'Early — with the research brief at run start' },
+  { value: 'after_research', label: 'After web search — alongside search results' },
+  { value: 'before_artifact', label: 'Late — right before the final output step' },
+]
+
+function normalizeSessionRefsFromApi(raw: unknown): ReferenceUrl[] {
+  if (!Array.isArray(raw)) return []
+  const out: ReferenceUrl[] = []
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue
+    const r = x as Record<string, unknown>
+    const url = typeof r.url === 'string' ? r.url.trim() : ''
+    if (!url) continue
+    const pl = r.placement
+    const placement: ReferenceUrl['placement'] =
+      pl === 'after_research' || pl === 'before_artifact' ? pl : 'session_start'
+    const row: ReferenceUrl = { url, placement }
+    if (typeof r.label === 'string' && r.label.trim()) row.label = r.label.trim()
+    out.push(row)
+  }
+  return out
 }
 
 function formatPlanVersionTs(ts: number): string {
@@ -184,11 +212,21 @@ function eventLabel(ev: SseEvent): {
     return { kind: 'phase', lane: 'process', title: '', body: '' }
   }
   if (t === 'plan') {
+    const e = ev as { artifact_kind?: string }
+    const ak = String(e.artifact_kind || '').toLowerCase()
+    const title =
+      ak === 'report'
+        ? 'Report ready'
+        : ak === 'code'
+          ? 'Code ready'
+          : ak === 'plan'
+            ? 'Plan ready'
+            : 'Output ready'
     return {
       kind: 'text',
       lane: 'chat',
-      title: 'Plan ready',
-      body: 'Open the **Plan** tab on the right to preview and download.',
+      title,
+      body: 'Open the **Output** tab on the right to preview and download.',
     }
   }
   if (t === 'stream_end') {
@@ -200,7 +238,7 @@ function eventLabel(ev: SseEvent): {
       lane: 'process',
       title: 'Ready',
       body:
-        'You can refine the plan (Plan tab), send a new message to start a fresh council run, or open a new chat.',
+        'When a primary file was produced, refine it from the Output tab; otherwise keep chatting or start a fresh council run.',
     }
   }
   return {
@@ -254,7 +292,7 @@ function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
         id,
         lane: 'chat',
         kind: 'text',
-        title: 'You · refine plan',
+        title: 'You · refine output',
         body: m.content,
       }
     }
@@ -263,7 +301,7 @@ function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
         id,
         lane: 'chat',
         kind: 'text',
-        title: an || 'Plan refine',
+        title: an || 'Output refine',
         body: m.content,
       }
     }
@@ -285,6 +323,26 @@ function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
         lane: 'chat',
         kind: 'text',
         title: an || 'Planner',
+        body: m.content,
+      }
+    }
+    if (aid === 'artifact') {
+      const ak = String(
+        (m.meta as { artifact_kind?: string } | undefined)?.artifact_kind || ''
+      ).toLowerCase()
+      const title =
+        ak === 'report'
+          ? 'Report writer'
+          : ak === 'code'
+            ? 'Code writer'
+            : ak === 'plan'
+              ? 'Planner'
+              : an || 'Output'
+      return {
+        id,
+        lane: 'chat',
+        kind: 'text',
+        title,
         body: m.content,
       }
     }
@@ -445,6 +503,8 @@ export default function App() {
   const [awaiting, setAwaiting] = useState(false)
   const [planMd, setPlanMd] = useState('')
   const [planName, setPlanName] = useState('plan.md')
+  /** plan | report | code | conversation | none — from server last run */
+  const [artifactKind, setArtifactKind] = useState('')
   const [planVersions, setPlanVersions] = useState<PlanVersion[]>([])
   const [planVersionPick, setPlanVersionPick] = useState<'latest' | number>(
     'latest'
@@ -461,6 +521,11 @@ export default function App() {
   const [refineAgentIds, setRefineAgentIds] = useState<string[]>(['orchestrator'])
   /** When the last run finished, chat send can extend the session instead of wiping it. */
   const [continuePlanFromChat, setContinuePlanFromChat] = useState(true)
+  const [sessionReferenceUrls, setSessionReferenceUrls] = useState<ReferenceUrl[]>(
+    []
+  )
+  const [sessionRefsSaving, setSessionRefsSaving] = useState(false)
+  const [sessionRefsError, setSessionRefsError] = useState<string | null>(null)
 
   const readLayoutNum = (key: string, fallback: number, min: number, max: number) => {
     if (typeof window === 'undefined') return fallback
@@ -727,6 +792,20 @@ export default function App() {
     return `${stem}_archived_${stamp}.md`
   }, [planVersionPick, planName, planVersions])
 
+  const outputTabLabel = useMemo(() => {
+    const k = artifactKind.toLowerCase()
+    if (k === 'report') return 'Report'
+    if (k === 'code') return 'Code'
+    if (k === 'plan') return 'Plan'
+    return 'Output'
+  }, [artifactKind])
+
+  const canRefinePrimaryOutput = useMemo(() => {
+    const k = artifactKind.toLowerCase()
+    if (k === 'conversation' || k === 'none') return false
+    return true
+  }, [artifactKind])
+
   useEffect(() => {
     scrollToBottom()
   }, [feed, busy])
@@ -735,12 +814,15 @@ export default function App() {
     setFeed([])
     setPlanMd('')
     setPlanName('plan.md')
+    setArtifactKind('')
     setPlanVersions([])
     setPlanVersionPick('latest')
     setResearch(null)
     setPhase('')
     setAwaiting(false)
     setRightPanelTab('plan')
+    setSessionReferenceUrls([])
+    setSessionRefsError(null)
   }, [])
 
   const stopStream = useCallback(() => {
@@ -748,6 +830,27 @@ export default function App() {
     streamAbort.current = null
     setBusy(false)
   }, [])
+
+  const saveSessionReferenceUrls = useCallback(async () => {
+    if (!sessionId) return
+    setSessionRefsError(null)
+    setSessionRefsSaving(true)
+    try {
+      const cleaned = sessionReferenceUrls
+        .map((r) => ({
+          url: r.url.trim(),
+          placement: r.placement,
+          ...(r.label?.trim() ? { label: r.label.trim() } : {}),
+        }))
+        .filter((r) => r.url)
+      const res = await patchSession(sessionId, { reference_urls: cleaned })
+      setSessionReferenceUrls(normalizeSessionRefsFromApi(res.reference_urls))
+    } catch (e) {
+      setSessionRefsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSessionRefsSaving(false)
+    }
+  }, [sessionId, sessionReferenceUrls])
 
   const hydrateFromApi = useCallback((data: Awaited<ReturnType<typeof getSession>>) => {
     setCouncilSelectError(null)
@@ -757,6 +860,9 @@ export default function App() {
     setAwaiting((data.phase || '') === 'awaiting_user')
     setPlanMd(data.plan_markdown || '')
     setPlanName(data.plan_filename || 'plan.md')
+    setArtifactKind(String(data.artifact_kind || '').trim())
+    setSessionReferenceUrls(normalizeSessionRefsFromApi(data.reference_urls))
+    setSessionRefsError(null)
     setPlanVersions(
       Array.isArray(data.plan_versions) ? data.plan_versions : []
     )
@@ -879,9 +985,12 @@ export default function App() {
         content: string
         filename: string
         plan_versions?: PlanVersion[]
+        artifact_kind?: string
       }
       setPlanMd(p.content)
       setPlanName(p.filename || 'plan.md')
+      const ak = String(p.artifact_kind || '').trim().toLowerCase()
+      setArtifactKind(ak || (p.content?.trim() ? 'plan' : ''))
       if (Array.isArray(p.plan_versions)) setPlanVersions(p.plan_versions)
       setPlanVersionPick('latest')
       if (window.matchMedia('(max-width: 1023px)').matches) {
@@ -965,7 +1074,7 @@ export default function App() {
           id: simpleId(),
           lane: 'chat',
           kind: 'text',
-          title: 'You · refine plan',
+          title: 'You · refine output',
           body: bodyPreview,
         },
       ])
@@ -1124,9 +1233,11 @@ export default function App() {
   const downloadPlan = () => {
     if (!displayedPlanMd) return
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(
-      new Blob([displayedPlanMd], { type: 'text/markdown;charset=utf-8' })
-    )
+    const mime =
+      artifactKind.toLowerCase() === 'code'
+        ? 'text/plain;charset=utf-8'
+        : 'text/markdown;charset=utf-8'
+    a.href = URL.createObjectURL(new Blob([displayedPlanMd], { type: mime }))
     a.download = displayedPlanFilename
     a.click()
     URL.revokeObjectURL(a.href)
@@ -1446,7 +1557,7 @@ export default function App() {
                     setCouncilForNew(v)
                     void (async () => {
                       try {
-                        await patchSessionCouncil(sessionId, v)
+                        await patchSession(sessionId, { council_id: v })
                       } catch (err) {
                         setSessionCouncilId(prev)
                         setCouncilForNew(prev)
@@ -1887,14 +1998,15 @@ export default function App() {
                 : undefined
             }
             role="complementary"
-            aria-label="Research and plan"
+            aria-label="Research and primary output"
           >
             <div className="shrink-0 px-4 pt-4 pb-2 border-b border-white/[0.06]">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Outputs
               </h2>
               <p className="text-[11px] text-slate-600 mt-1">
-                Research (DuckDuckGo or Tavily in Settings) &amp; plan
+                Web research (Settings → Connection) and your own URLs in the <span className="text-slate-500">Research</span>{' '}
+                tab; primary file on the other tab.
               </p>
             </div>
             <div
@@ -1915,10 +2027,12 @@ export default function App() {
                 onClick={() => setRightPanelTab('research')}
               >
                 Research
-                {research && (
+                {(research ||
+                  (sessionId &&
+                    sessionReferenceUrls.some((u) => (u.url || '').trim()))) && (
                   <span
                     className="inline-flex size-1.5 rounded-full bg-emerald-400"
-                    title="Has content"
+                    title="Research brief or saved URLs"
                   />
                 )}
               </button>
@@ -1934,7 +2048,7 @@ export default function App() {
                 }`}
                 onClick={() => setRightPanelTab('plan')}
               >
-                Plan
+                {outputTabLabel}
                 {(planMd || planVersions.length > 0) && (
                   <span
                     className="inline-flex size-1.5 rounded-full bg-violet-400"
@@ -1949,6 +2063,116 @@ export default function App() {
                 role="tabpanel"
                 aria-labelledby="tab-research"
               >
+                {sessionId ? (
+                  <div className="mb-4 space-y-2 rounded-xl border border-emerald-500/15 bg-emerald-950/10 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-[11px] font-semibold text-emerald-200/90 uppercase tracking-wide">
+                          Your research URLs
+                        </h3>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">
+                          Pages you want in context. The server fetches each link and merges the text into the
+                          same research brief the council sees (timing below). Save before you send a message.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void saveSessionReferenceUrls()}
+                        disabled={sessionRefsSaving || busy}
+                        className="shrink-0 text-[11px] font-medium rounded-lg bg-slate-700/80 hover:bg-slate-600/90 disabled:opacity-45 px-2.5 py-1 text-slate-100"
+                      >
+                        {sessionRefsSaving ? 'Saving…' : 'Save URLs'}
+                      </button>
+                    </div>
+                    {sessionRefsError ? (
+                      <p className="text-[11px] text-rose-300/95">{sessionRefsError}</p>
+                    ) : null}
+                    {sessionReferenceUrls.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        No URLs yet — add a row for docs or articles you need in research context.
+                      </p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {sessionReferenceUrls.map((r, i) => (
+                          <li
+                            key={i}
+                            className="rounded-lg border border-white/[0.06] bg-slate-900/35 p-2 space-y-1.5"
+                          >
+                            <div className="flex flex-wrap gap-1.5">
+                              <input
+                                type="url"
+                                className="flex-1 min-w-[7rem] rounded-md border border-slate-600/55 bg-slate-950/80 px-2 py-1 text-[11px] text-slate-100 font-mono"
+                                placeholder="https://…"
+                                value={r.url}
+                                onChange={(e) => {
+                                  const next = [...sessionReferenceUrls]
+                                  next[i] = { ...next[i]!, url: e.target.value }
+                                  setSessionReferenceUrls(next)
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="text-[11px] text-rose-300/90 hover:text-rose-200"
+                                onClick={() =>
+                                  setSessionReferenceUrls(
+                                    sessionReferenceUrls.filter((_, j) => j !== i)
+                                  )
+                                }
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            <input
+                              type="text"
+                              className="w-full rounded-md border border-slate-600/55 bg-slate-950/80 px-2 py-1 text-[11px] text-slate-200"
+                              placeholder="Label in brief (optional)"
+                              value={r.label ?? ''}
+                              onChange={(e) => {
+                                const next = [...sessionReferenceUrls]
+                                next[i] = { ...next[i]!, label: e.target.value }
+                                setSessionReferenceUrls(next)
+                              }}
+                            />
+                            <select
+                              className="w-full max-w-md rounded-md border border-slate-600/55 bg-slate-950/80 px-2 py-1 text-[11px] text-slate-100"
+                              value={r.placement}
+                              onChange={(e) => {
+                                const next = [...sessionReferenceUrls]
+                                next[i] = {
+                                  ...next[i]!,
+                                  placement: e.target.value as ReferenceUrl['placement'],
+                                }
+                                setSessionReferenceUrls(next)
+                              }}
+                            >
+                              {RESEARCH_URL_PLACEMENTS.map((p) => (
+                                <option key={p.value} value={p.value}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </select>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSessionReferenceUrls([
+                          ...sessionReferenceUrls,
+                          { url: '', placement: 'after_research' },
+                        ])
+                      }
+                      className="text-[11px] font-medium text-emerald-300/95 hover:text-emerald-200"
+                    >
+                      + Add URL
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500 mb-4">
+                    Start or open a chat to add research URLs.
+                  </p>
+                )}
                 {research ? (
                   <div className="space-y-4">
                     <div>
@@ -1977,8 +2201,9 @@ export default function App() {
                 ) : (
                   <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center">
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      No research yet. The orchestrator runs web search when it chooses to (DuckDuckGo
-                      or Tavily — set under Settings → Connection).
+                      No web research in the brief yet. The orchestrator runs search when it chooses (DuckDuckGo
+                      or Tavily under Settings → Connection). Your saved URLs above are merged into this same
+                      brief when a run uses them.
                     </p>
                   </div>
                 )}
@@ -1989,7 +2214,9 @@ export default function App() {
                 aria-labelledby="tab-plan"
               >
                 <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center mb-3">
-                  <h3 className="text-sm font-medium text-slate-200">plan.md</h3>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    {displayedPlanFilename}
+                  </h3>
                   <div className="flex flex-wrap items-center gap-2">
                     {planVersions.length > 0 ? (
                       <label className="flex items-center gap-2 text-[11px] text-slate-400">
@@ -2042,7 +2269,7 @@ export default function App() {
                 {planVersionPick !== 'latest' ? (
                   <p className="text-[11px] text-amber-200/80 mb-2 leading-relaxed">
                     Viewing an archived snapshot. Refine with LLM only updates the
-                    latest plan — switch to Latest to edit the current file.
+                    latest file — switch to Latest to edit the current version.
                   </p>
                 ) : null}
                 {displayedPlanMd ? (
@@ -2055,11 +2282,16 @@ export default function App() {
                 ) : (
                   <div className="rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center">
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      Plan appears here when the run reaches the planning step.
+                      {artifactKind === 'none'
+                        ? 'Nil output — this council does not produce a primary file after discussion.'
+                        : artifactKind === 'conversation'
+                          ? 'Conversation-focused — finish with orchestrator_done; no primary file is required.'
+                          : 'Primary output appears here when the run reaches the final artifact step.'}
                     </p>
                   </div>
                 )}
                 {planMd.trim() &&
+                  canRefinePrimaryOutput &&
                   phase === 'done' &&
                   sessionId &&
                   planVersionPick === 'latest' && (

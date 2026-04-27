@@ -62,6 +62,14 @@ export type SessionListItem = {
   has_plan: boolean
 }
 
+export type OutputMode = 'plan' | 'report' | 'code' | 'conversation' | 'none'
+
+export type ReferenceUrl = {
+  url: string
+  label?: string
+  placement: 'session_start' | 'after_research' | 'before_artifact'
+}
+
 export type SessionResponse = {
   id: string
   title?: string
@@ -76,6 +84,10 @@ export type SessionResponse = {
   pending_user_questions?: string[]
   plan_markdown?: string
   plan_filename?: string
+  /** plan | report | code | conversation | none */
+  artifact_kind?: string
+  /** Per-chat URLs merged into the research brief (see Research tab in the app). */
+  reference_urls?: ReferenceUrl[]
   plan_versions?: PlanVersion[]
   plan_iteration_message?: string
   error_message?: string | null
@@ -123,6 +135,7 @@ export type SseEvent =
       content: string
       filename: string
       plan_versions?: PlanVersion[]
+      artifact_kind?: string
     }
   | { type: 'error'; message: string }
   | { type: 'done' }
@@ -152,6 +165,12 @@ export type CouncilConfig = {
    * Empty/omitted → server uses backend/app/prompts/orchestrator.py defaults.
    */
   orchestrator_user_instructions?: string | null
+  /** Primary artifact after the council run (default plan). */
+  output_mode?: OutputMode
+  /** Extra instructions for report/code generation. */
+  output_instructions?: string | null
+  /** Download filename hint for report or code. */
+  artifact_filename?: string | null
 }
 
 export async function listCouncils(): Promise<string[]> {
@@ -261,14 +280,18 @@ export async function getSession(
   return r.json()
 }
 
-export async function patchSessionCouncil(
+export async function patchSession(
   sessionId: string,
-  councilId: string
-): Promise<{ id: string; council_id: string }> {
+  body: { council_id?: string; reference_urls?: ReferenceUrl[] }
+): Promise<{
+  id: string
+  council_id: string
+  reference_urls?: ReferenceUrl[]
+}> {
   const r = await fetch(`${API}/sessions/${sessionId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ council_id: councilId }),
+    body: JSON.stringify(body),
   })
   if (!r.ok) {
     const t = await r.text()

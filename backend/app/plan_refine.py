@@ -79,7 +79,7 @@ def _build_refine_system_prompt(personas: list[AgentDef]) -> str:
         )
     parts.append(
         "## Task\n"
-        "You are revising an existing implementation plan (plan.md). "
+        "You are revising the session's primary output (plan, report, or prose — stored like plan.md). "
         "Apply the user's instruction faithfully. Output a single Markdown document only."
     )
     return "\n\n".join(parts)
@@ -91,10 +91,10 @@ def _build_refine_user_message(
     selection: str | None,
 ) -> str:
     blocks = [
-        "Below is the current plan.md in full.",
-        "--- BEGIN PLAN ---",
+        "Below is the current primary output in full.",
+        "--- BEGIN DOCUMENT ---",
         plan_md.rstrip(),
-        "--- END PLAN ---",
+        "--- END DOCUMENT ---",
     ]
     sel = (selection or "").strip()
     if sel:
@@ -132,7 +132,10 @@ async def run_plan_refine(
     s.error_message = None
     plan_in = (s.plan_markdown or "").strip()
     if not plan_in:
-        yield {"type": "error", "message": "No plan to refine — run the council until plan.md exists."}
+        yield {
+            "type": "error",
+            "message": "No output to refine — run the council until a primary file exists.",
+        }
         return
     if s.phase != SessionPhase.done:
         yield {
@@ -148,7 +151,7 @@ async def run_plan_refine(
     yield {
         "type": "phase",
         "phase": "plan_refine",
-        "message": f"Refining plan with: {', '.join(labels)}",
+        "message": f"Refining output with: {', '.join(labels)}",
     }
 
     try:
@@ -160,21 +163,21 @@ async def run_plan_refine(
         )
         new_md = strip_outer_markdown_fence(raw)
         if not new_md.strip():
-            yield {"type": "error", "message": "Model returned empty plan text."}
+            yield {"type": "error", "message": "Model returned empty text."}
             return
 
         archive_current_plan(s, "before_refine")
         s.plan_markdown = new_md
         s.plan_iteration_message = ""
         summary = (
-            f"Plan refined ({', '.join(labels)}).\n\n"
+            f"Output refined ({', '.join(labels)}).\n\n"
             f"_Instruction:_ {(instruction or '').strip()[:400]}"
             + ("…" if len((instruction or "").strip()) > 400 else "")
         )
         s.messages.append(
             ChatMessage(
                 role="user",
-                content=f"[Refine plan] {(instruction or '').strip()[:2000]}",
+                content=f"[Refine output] {(instruction or '').strip()[:2000]}",
                 agent_id=None,
                 agent_name=None,
                 meta={"kind": "plan_refine_request", "agent_ids": [p.id for p in personas]},
@@ -185,18 +188,20 @@ async def run_plan_refine(
                 role="assistant",
                 content=summary,
                 agent_id="plan_refine",
-                agent_name="Plan refine",
+                agent_name="Output refine",
                 meta={
                     "kind": "plan_refine",
                     "personas": labels,
                 },
             )
         )
+        ak = str(getattr(s, "artifact_kind", "") or "").strip() or "plan"
         yield {
             "type": "plan",
             "content": s.plan_markdown,
             "filename": s.plan_filename or "plan.md",
             "plan_versions": list(getattr(s, "plan_versions", None) or []),
+            "artifact_kind": ak,
         }
         yield {"type": "done"}
     except Exception as e:  # noqa: BLE001
