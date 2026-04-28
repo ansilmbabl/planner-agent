@@ -103,6 +103,32 @@ PIPELINE_PROMPT_META: list[PromptMeta] = [
         "description": "Appended when using Plan tab → Refine with LLM.",
     },
     {
+        "key": "refine_prompt_system",
+        "category": "Prompt polish (settings)",
+        "title": "Refine field with model — system message",
+        "description": (
+            "Used when using Settings → Refine with model on council or pipeline text fields. "
+            "Must instruct the model to wrap output in <<<PROMPT_START>>> … <<<PROMPT_END>>>."
+        ),
+    },
+    {
+        "key": "refine_prompt_user_template",
+        "category": "Prompt polish (settings)",
+        "title": "Refine field with model — user message template",
+        "description": (
+            "Must contain exactly these placeholders: {{LABEL}}, {{CURRENT_PROMPT}}, {{INSTRUCTION}}. "
+            "Filled with field context, existing text, and the user tweak (or default polish instruction)."
+        ),
+    },
+    {
+        "key": "refine_prompt_default_instruction",
+        "category": "Prompt polish (settings)",
+        "title": "Refine field — default change request",
+        "description": (
+            "Used when the user leaves tweaks empty in Refine with model (automatic clarity pass)."
+        ),
+    },
+    {
         "key": "research_planner_system",
         "category": "Research",
         "title": "Research planner — system message",
@@ -136,6 +162,11 @@ def _defaults() -> dict[str, str]:
     from .prompts.debate import AGENT_TURN_SCHEMA
     from .prompts.orchestrator import ORCHESTRATOR_SYSTEM_JSON_SUFFIX, ORCH_DECISION_SCHEMA
     from .prompts.plan_refine import PLAN_REFINE_USER_SUFFIX
+    from .prompts.refine_inline import (
+        REFINE_PROMPT_DEFAULT_INSTRUCTION,
+        REFINE_PROMPT_SYSTEM,
+        REFINE_PROMPT_USER_TEMPLATE,
+    )
 
     return {
         "plan_writer_system": (
@@ -177,6 +208,9 @@ def _defaults() -> dict[str, str]:
         "artifact_code_user_suffix": (
             "Output only the file body. Use the filename hint only for language choice if helpful."
         ),
+        "refine_prompt_system": REFINE_PROMPT_SYSTEM.strip(),
+        "refine_prompt_user_template": REFINE_PROMPT_USER_TEMPLATE.strip(),
+        "refine_prompt_default_instruction": REFINE_PROMPT_DEFAULT_INSTRUCTION.strip(),
     }
 
 
@@ -232,6 +266,21 @@ def get_prompt(key: str, data_dir: Path | None = None) -> str:
     return _defaults().get(key, "")
 
 
+def format_refine_prompt_user_template(
+    template: str,
+    *,
+    label: str,
+    current_prompt: str,
+    instruction: str,
+) -> str:
+    """Substitute placeholders in refine_prompt_user_template (see prompts/refine_inline.py)."""
+    return (
+        template.replace("{{LABEL}}", label)
+        .replace("{{CURRENT_PROMPT}}", current_prompt)
+        .replace("{{INSTRUCTION}}", instruction)
+    )
+
+
 def save_prompt_override(data_dir: Path, key: str, content: str) -> None:
     path = overrides_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,3 +318,21 @@ def list_prompts_for_api(data_dir: Path) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _assert_pipeline_prompt_registry() -> None:
+    defaults_keys = frozenset(_defaults().keys())
+    meta_keys = frozenset(m["key"] for m in PIPELINE_PROMPT_META)
+    for key in sorted(meta_keys - defaults_keys):
+        log.error(
+            "PIPELINE_PROMPT_META defines %r but _defaults() has no entry — fix prompt_catalog._defaults",
+            key,
+        )
+    for key in sorted(defaults_keys - meta_keys):
+        log.warning(
+            "Default prompt %r has no PIPELINE_PROMPT_META row — UI will use category 'Other'",
+            key,
+        )
+
+
+_assert_pipeline_prompt_registry()

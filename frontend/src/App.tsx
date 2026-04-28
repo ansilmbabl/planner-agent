@@ -35,7 +35,7 @@ type FeedLane = 'chat' | 'process'
 type FeedItem = {
   id: string
   lane: FeedLane
-  kind: 'phase' | 'research' | 'agent' | 'synth' | 'await' | 'err' | 'text'
+  kind: 'phase' | 'research' | 'agent' | 'await' | 'err' | 'text'
   title: string
   body?: string
 }
@@ -189,9 +189,9 @@ function eventLabel(ev: SseEvent): {
   if (t === 'synth') {
     const e = ev as { summary: string }
     return {
-      kind: 'synth',
+      kind: 'agent',
       lane: 'process',
-      title: 'Synthesizer',
+      title: 'Discussion summary',
       body: e.summary,
     }
   }
@@ -364,15 +364,6 @@ function sessionMessagesToFeed(msgs: SessionMessage[]): FeedItem[] {
         body: m.content,
       }
     }
-    if (/synth/i.test(an) || /synth/i.test(aid) || /align/i.test(an)) {
-      return {
-        id,
-        lane: 'process',
-        kind: 'synth',
-        title: an || 'Synthesizer',
-        body: m.content,
-      }
-    }
     return {
       id,
       lane: 'process',
@@ -427,7 +418,6 @@ function feedItemShell(
     phase: 'border-white/[0.08]',
     research: 'border-cyan-500/15 bg-cyan-950/15',
     agent: 'border-violet-500/15 bg-violet-950/10',
-    synth: 'border-emerald-500/15 bg-emerald-950/10',
     await:
       'border-amber-400/25 bg-amber-950/20 ring-1 ring-amber-500/10',
     err: 'border-rose-500/25',
@@ -447,7 +437,6 @@ function feedTitleClass(
     phase: 'text-slate-400 text-xs font-medium',
     research: 'text-cyan-200/90 text-xs font-medium',
     agent: 'text-violet-200/90 text-xs font-medium',
-    synth: 'text-emerald-200/90 text-xs font-medium',
     await: 'text-amber-100/95 text-xs font-semibold',
     err: 'text-rose-300/95',
     text: 'text-slate-200 text-xs font-medium',
@@ -463,8 +452,6 @@ function processDotClass(kind: FeedItem['kind']): string {
       return 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.35)]'
     case 'agent':
       return 'bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.4)]'
-    case 'synth':
-      return 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.35)]'
     default:
       return 'bg-slate-500'
   }
@@ -660,7 +647,6 @@ export default function App() {
         const allowed = new Set<string>([
           ...(merged.orchestrator ? [merged.orchestrator.id] : []),
           ...merged.debating_agents.map((d) => d.id),
-          ...(merged.synthesizer ? [merged.synthesizer.id] : []),
         ])
         setRefineAgentIds((prev) => {
           const next = prev.filter((id) => allowed.has(id))
@@ -1757,8 +1743,9 @@ export default function App() {
                     Welcome
                   </p>
                   <p className="text-slate-400 text-sm mt-3 leading-relaxed max-w-sm mx-auto">
-                    The <span className="text-slate-300">council</span> runs a loop: orchestrator chooses
-                    research, specialists, synthesizer, then writes <code className="text-slate-500">plan.md</code>.
+                    The <span className="text-slate-300">council</span> runs a loop: the orchestrator routes each
+                    step (research, your agents, questions, primary output), then the run can write{' '}
+                    <code className="text-slate-500">plan.md</code> or another configured artifact.
                     Your thread can stay chat-focused — enable <span className="text-slate-300">All</span> to watch
                     routing and research.
                   </p>
@@ -2378,22 +2365,6 @@ export default function App() {
                               <span className="text-slate-500 font-mono text-[10px]">{ag.id}</span>
                             </label>
                           ))}
-                          {councilDetail.synthesizer ? (
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                className="rounded border-slate-600"
-                                checked={refineAgentIds.includes(councilDetail.synthesizer.id)}
-                                onChange={() =>
-                                  toggleRefineAgent(councilDetail.synthesizer!.id)
-                                }
-                              />
-                              {councilDetail.synthesizer.name}
-                              <span className="text-slate-500 font-mono text-[10px]">
-                                {councilDetail.synthesizer.id}
-                              </span>
-                            </label>
-                          ) : null}
                         </div>
                       </fieldset>
                     ) : (

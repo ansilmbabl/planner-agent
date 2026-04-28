@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -43,6 +44,8 @@ from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
 from .user_preferences import load_preferences, save_preferences
 from .prompt_catalog import (
     PIPELINE_PROMPT_META,
+    format_refine_prompt_user_template,
+    get_prompt,
     list_prompts_for_api,
     reset_prompt_overrides,
     save_prompt_override,
@@ -112,7 +115,7 @@ class RefinePlanBody(BaseModel):
     )
     agent_ids: list[str] = Field(
         default_factory=list,
-        description='Ids to draw system prompts from: "orchestrator", debater ids, "synthesizer"',
+        description='Ids to draw system prompts from: orchestrator id and council agent ids',
     )
     model: str | None = None
 
@@ -135,7 +138,10 @@ class BuiltinPromptPutBody(BaseModel):
 
 class RefinePromptBody(BaseModel):
     current_prompt: str = Field(default="", description="Existing text to improve or replace")
-    instruction: str = Field(..., min_length=1, description="What the user wants changed")
+    instruction: str | None = Field(
+        default=None,
+        description="Optional tweaks; omit or empty for an automatic clarity pass",
+    )
     context_label: str | None = Field(
         default=None,
         description="Short label for the model, e.g. orchestrator system",
@@ -367,6 +373,13 @@ async def put_builtin_prompt(body: BuiltinPromptPutBody) -> dict[str, Any]:
     valid = {m["key"] for m in PIPELINE_PROMPT_META}
     if body.key not in valid:
         raise HTTPException(400, f"Unknown prompt key: {body.key!r}")
+    if body.key == "refine_prompt_user_template":
+        for needle in ("{{LABEL}}", "{{CURRENT_PROMPT}}", "{{INSTRUCTION}}"):
+            if needle not in body.content:
+                raise HTTPException(
+                    400,
+                    f"refine_prompt_user_template must contain placeholder {needle!r}",
+                )
     s = get_settings()
     save_prompt_override(s.sqlite_path.parent, body.key, body.content)
     return {"status": "ok", "key": body.key}
@@ -377,6 +390,88 @@ async def post_builtin_prompts_reset() -> dict[str, Any]:
     s = get_settings()
     reset_prompt_overrides(s.sqlite_path.parent)
     return {"status": "ok", "prompts": list_prompts_for_api(s.sqlite_path.parent)}
+
+
+def _strip_outer_fence(text: str) -> str:
+    t = (text or "").strip()
+    m = re.match(r"^```(?:\w+)?\s*\r?\n([\s\S]*?)\r?\n```\s*$", t)
+    if m:
+        return m.group(1).strip()
+    return t
+
+
+def _remove_section_echo_lines(text: str) -> str:
+    """Drop lines that look like echoed template / section headers from sloppy completions."""
+    noise = re.compile(
+        r"^\s*-{3,}\s*(CURRENT\s+TEXT|USER\s+REQUEST|NEW\s+(TEXT|PROMPT)|UPDATED\s+PROMPT|"
+        r"CHANGE\s+REQUEST|OUTPUT|REPLACEMENT|PREVIOUS\s+PROMPT)\s*-{3,}\s*$",
+        re.IGNORECASE,
+    )
+    xmlish = re.compile(
+        r"^\s*</?(previous_prompt|change_request|current_text|user_request)\s*/?>\s*$",
+        re.IGNORECASE,
+    )
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if noise.match(s) or xmlish.match(s):
+            continue
+        if re.match(r"^#+\s*(Current|User|New|Updated|Output)\b", s, re.I):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _extract_refined_prompt(raw: str) -> str | None:
+    """Pull text between <<<PROMPT_START>>> and <<<PROMPT_END>>>; tolerate minor model mistakes."""
+    t = _strip_outer_fence((raw or "").strip())
+    if not t:
+        return None
+    full = re.search(
+        r"<<<PROMPT_START>>>\s*(.*?)\s*<<<PROMPT_END>>>",
+        t,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if full:
+        inner = full.group(1).strip()
+        return inner or None
+    partial = re.search(
+        r"<<<PROMPT_START>>>\s*(.*)",
+        t,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if partial:
+        rest = partial.group(1).strip()
+        if "<<<PROMPT_END>>>" in rest:
+            rest = rest.split("<<<PROMPT_END>>>", 1)[0].strip()
+        rest = _remove_section_echo_lines(rest)
+        rest = re.sub(
+            r"^(?:here(?:'s| is)\s+)?(?:the\s+)?(?:updated|new|revised)\s+prompt\s*:[ \t]*\n?",
+            "",
+            rest,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        return rest or None
+    loose = _remove_section_echo_lines(t)
+    loose = re.sub(
+        r"^(?:here(?:'s| is)\s+)?(?:the\s+)?(?:updated|new|revised)\s+prompt\s*:[ \t]*\n?",
+        "",
+        loose,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    if loose and "<<" not in loose:
+        low = loose.lower()
+        if (
+            "</previous_prompt>" in low
+            or "<change_request>" in low
+            or "--- user request ---" in low
+            or "--- current text ---" in low
+        ):
+            return None
+        return loose
+    return None
 
 
 async def _resolve_refiner_model(settings: Settings, requested: str | None) -> str:
@@ -394,32 +489,56 @@ async def _resolve_refiner_model(settings: Settings, requested: str | None) -> s
 @app.post("/api/refine-prompt", response_model=None)
 async def refine_prompt_api(body: RefinePromptBody) -> dict[str, Any]:
     settings = get_settings()
+    data_dir = settings.sqlite_path.parent
     model = await _resolve_refiner_model(settings, body.model)
     label = (body.context_label or "prompt block").strip()
-    system = (
-        "You improve prompts and instruction blocks for LLM applications. "
-        "Return ONLY the replacement text—no preamble, no 'Here is', no explanation. "
-        "Do not wrap the answer in markdown fences unless the user explicitly asked for a fenced block."
+    ins = (body.instruction or "").strip()
+    if not ins:
+        ins = (get_prompt("refine_prompt_default_instruction", data_dir) or "").strip()
+    if not ins:
+        ins = "Polish for clarity; keep intent and hard constraints."
+
+    system = (get_prompt("refine_prompt_system", data_dir) or "").strip()
+    if not system:
+        raise HTTPException(
+            500,
+            "Pipeline default refine_prompt_system is empty. Reset or fix Pipeline defaults.",
+        )
+    tmpl = (get_prompt("refine_prompt_user_template", data_dir) or "").strip()
+    if not tmpl:
+        raise HTTPException(
+            500,
+            "Pipeline default refine_prompt_user_template is empty. Reset or fix Pipeline defaults.",
+        )
+    for needle in ("{{LABEL}}", "{{CURRENT_PROMPT}}", "{{INSTRUCTION}}"):
+        if needle not in tmpl:
+            raise HTTPException(
+                500,
+                f"refine_prompt_user_template must include placeholder {needle!r}. Fix under Pipeline defaults.",
+            )
+    user = format_refine_prompt_user_template(
+        tmpl,
+        label=label,
+        current_prompt=body.current_prompt,
+        instruction=ins,
     )
-    user = f"""Block role: {label}
-
---- CURRENT TEXT ---
-{body.current_prompt}
-
---- USER REQUEST ---
-{body.instruction}
-
-Output the full new text that should replace CURRENT TEXT."""
     try:
-        out = await complete_chat(
+        raw = await complete_chat(
             settings,
             [_msg_system(system), _msg_user(user)],
             model=model,
-            temperature=0.25,
+            temperature=0.15,
         )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, str(e)) from e
-    return {"refined": (out or "").strip(), "model": model}
+    refined = _extract_refined_prompt(raw or "")
+    if not refined:
+        raise HTTPException(
+            500,
+            "Could not read a refined prompt (expected <<<PROMPT_START>>> … <<<PROMPT_END>>>). "
+            "Try again or use a stronger model.",
+        )
+    return {"refined": refined, "model": model}
 
 
 @app.get("/api/models")
@@ -614,8 +733,6 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
             sess.pending_user_questions = []
             sess.user_answered_clarification = False
             sess.error_message = None
-            sess.synthesizer_ran = False
-            sess.last_synth_summary = ""
             sess.discussion_round = 0
             sess.last_consolidated_questions = []
         else:
@@ -633,8 +750,6 @@ async def post_message(session_id: str, body: PostMessageBody) -> StreamingRespo
             sess.pending_user_questions = []
             sess.user_answered_clarification = False
             sess.error_message = None
-            sess.synthesizer_ran = False
-            sess.last_synth_summary = ""
             sess.discussion_round = 0
             sess.last_consolidated_questions = []
 

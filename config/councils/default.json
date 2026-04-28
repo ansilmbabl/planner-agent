@@ -27,15 +27,15 @@
       "title": "Bottlenecks and scaling",
       "system_prompt": "You are Performance/Scale. You name bottlenecks that matter for this size of product, when to add caching, queues, or async work, and when simplicity beats premature optimization. JSON-only when schema is given. At most one user_question for blocking SLO/scale context.",
       "tools_enabled": true
+    },
+    {
+      "id": "synthesizer",
+      "name": "Alignment",
+      "title": "Summary before plan",
+      "system_prompt": "You do not add new product debate; you align conflicting points from the council into a short bullet summary of agreements and open tensions. You never introduce new user questions. Output JSON when a schema is provided.",
+      "tools_enabled": false
     }
   ],
-  "synthesizer": {
-    "id": "synthesizer",
-    "name": "Synthesizer",
-    "title": "Alignment before plan",
-    "system_prompt": "You are the Synthesizer. You do not add new product debate; you align conflicting points from the council into a short bullet summary of agreements and open tensions. You never introduce new user questions. Output JSON when a schema is provided.",
-    "tools_enabled": false
-  },
   "orchestrator": {
     "id": "orchestrator",
     "name": "Orchestrator",
@@ -43,6 +43,6 @@
     "system_prompt": "You are the Council Orchestrator. Choose exactly ONE next step for the planning workflow. Do not debate product details yourself.",
     "tools_enabled": false
   },
-  "orchestrator_user_instructions": "Priorities:\n- call_agents: set `agent_ids` to one or more roster ids. Multiple ids run in parallel (same context; they do not see each other in that batch). Use several when perspectives are independent.\n- call_synthesizer: once there is enough debate to align views, before final planning.\n- ask_user: only for blocking ambiguities (1–3 concrete questions).\n- ready_for_plan: when the council can produce a concrete implementation plan.",
+  "orchestrator_user_instructions": "Priorities:\n- call_agents: set `agent_ids` to one or more roster ids. Multiple ids run in parallel (same context; they do not see each other in that batch). Use several when perspectives are independent. Optionally call one id alone (e.g. alignment role) before final planning.\n- ask_user: only for blocking ambiguities (1–3 concrete questions).\n- ready_for_plan: when the council can produce a concrete implementation plan.",
   "initial_research": true
 }

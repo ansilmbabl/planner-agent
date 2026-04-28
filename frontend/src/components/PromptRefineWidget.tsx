@@ -38,19 +38,15 @@ export function PromptRefineWidget({
   }, [defaultModel])
 
   const run = useCallback(async () => {
-    const ins = instruction.trim()
-    if (!ins) {
-      setErr('Describe what you want changed or added.')
-      return
-    }
     setBusy(true)
     setErr(null)
     setPreview(null)
     try {
       const m = (model || defaultModel || '').trim() || undefined
+      const ins = instruction.trim()
       const { refined } = await refinePromptText({
         current_prompt: currentText,
-        instruction: ins,
+        ...(ins ? { instruction: ins } : {}),
         context_label: contextLabel,
         model: m,
       })
@@ -84,10 +80,10 @@ export function PromptRefineWidget({
       {open && (
         <div className="space-y-2 pt-0.5">
           <label className="block text-[10px] text-slate-500">
-            What should change?
+            Tweaks (optional — leave empty for a general polish)
             <textarea
               className="mt-1 w-full rounded-md border border-slate-600/60 bg-slate-950/80 px-2 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500/35 min-h-[4rem]"
-              placeholder="e.g. Emphasize security review, shorten bullets, add a JSON example…"
+              placeholder="Empty = tighten & clarify while keeping intent. Or add specifics: shorter, stronger security, add JSON example…"
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
             />

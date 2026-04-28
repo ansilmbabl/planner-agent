@@ -152,7 +152,6 @@ export type AgentDef = {
 
 export type CouncilConfig = {
   debating_agents: AgentDef[]
-  synthesizer: AgentDef | null
   /**
    * Orchestrator hint only (default true): when true, lean toward run_research when grounding helps;
    * when false, use run_research only when clearly needed. No steps run before the first orchestrator decision.
@@ -385,7 +384,7 @@ export async function resetBuiltinPrompts(): Promise<{
 
 export async function refinePromptText(body: {
   current_prompt: string
-  instruction: string
+  instruction?: string
   context_label?: string
   model?: string
 }): Promise<{ refined: string; model: string }> {

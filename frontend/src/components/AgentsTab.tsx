@@ -26,7 +26,6 @@ import {
 import {
   councilConfigToJsonString,
   configSignature,
-  defaultSynthesizer,
   mergeCouncilDefaults,
   parseCouncilConfigText,
   slugAgentId,
@@ -34,7 +33,7 @@ import {
 import { PromptPipelineMap } from './PromptPipelineMap'
 import { PromptRefineWidget } from './PromptRefineWidget'
 
-type Selection = { kind: 'debate'; index: number } | { kind: 'synth' }
+type Selection = { kind: 'debate'; index: number }
 
 function initials(name: string, id: string) {
   const s = (name || id).trim()
@@ -47,7 +46,6 @@ type GraphNodeProps = {
   subtitle: string
   id: string
   tools: boolean
-  variant: 'debate' | 'synth'
   selected: boolean
   step?: number
   onSelect: () => void
@@ -58,12 +56,10 @@ function GraphNode({
   subtitle,
   id,
   tools,
-  variant,
   selected,
   step,
   onSelect,
 }: GraphNodeProps) {
-  const isSynth = variant === 'synth'
   return (
     <button
       type="button"
@@ -72,12 +68,8 @@ function GraphNode({
         group relative flex flex-col items-center text-center rounded-2xl border min-w-[5.5rem] max-w-[7.5rem] sm:min-w-[6.5rem] sm:max-w-[8rem] px-2 py-2.5 transition-all
         ${
           selected
-            ? isSynth
-              ? 'border-violet-400/70 bg-violet-500/20 ring-2 ring-violet-500/50 shadow-lg shadow-violet-900/30 scale-[1.02]'
-              : 'border-slate-400/50 bg-slate-800/80 ring-2 ring-violet-500/50 shadow-lg shadow-black/20 scale-[1.02]'
-            : isSynth
-              ? 'border-violet-500/25 bg-violet-950/40 hover:border-violet-500/40 hover:bg-violet-900/20'
-              : 'border-slate-600/50 bg-slate-900/50 hover:border-slate-500/60 hover:bg-slate-800/60'
+            ? 'border-slate-400/50 bg-slate-800/80 ring-2 ring-violet-500/50 shadow-lg shadow-black/20 scale-[1.02]'
+            : 'border-slate-600/50 bg-slate-900/50 hover:border-slate-500/60 hover:bg-slate-800/60'
         }
       `}
     >
@@ -89,11 +81,7 @@ function GraphNode({
       <span
         className={`
           flex h-10 w-10 items-center justify-center rounded-xl text-xs font-bold mb-1.5
-          ${
-            isSynth
-              ? 'bg-violet-600/50 text-violet-100'
-              : 'bg-slate-700/80 text-slate-200'
-          }
+          bg-slate-700/80 text-slate-200
         `}
       >
         {initials(label, id)}
@@ -136,46 +124,17 @@ function EdgeH() {
   )
 }
 
-function EdgeV() {
-  return (
-    <div className="flex flex-col items-center py-0.5" aria-hidden>
-      <div className="h-3 w-px bg-gradient-to-b from-slate-500/60 to-violet-500/40" />
-      <span className="text-[9px] text-slate-500 leading-none py-0.5">↓</span>
-      <div className="h-3 w-px bg-gradient-to-b from-violet-500/30 to-slate-500/40" />
-    </div>
-  )
-}
-
-/** Count of selectable pipeline nodes (debaters + optional synthesizer slot). */
-function agentSpan(debateLen: number, hasSynth: boolean): number {
-  return debateLen + (hasSynth ? 1 : 0)
-}
-
-/** Linear: 0..debateLen-1 = debaters; debateLen = synthesizer when hasSynth. */
-function toLinearPos(
-  sel: Selection | null,
-  debateLen: number,
-  hasSynth: boolean
-): number {
-  const span = agentSpan(debateLen, hasSynth)
-  if (span < 1) return 0
-  if (hasSynth && (!sel || sel.kind === 'synth')) return debateLen
+function toLinearPos(sel: Selection | null, debateLen: number): number {
+  if (debateLen < 1) return 0
   if (sel?.kind === 'debate') {
     return Math.min(Math.max(0, sel.index), Math.max(0, debateLen - 1))
   }
   return 0
 }
 
-function fromLinearPos(
-  n: number,
-  debateLen: number,
-  hasSynth: boolean
-): Selection | null {
-  const span = agentSpan(debateLen, hasSynth)
-  if (span < 1) return null
-  const k = ((n % span) + span) % span
-  if (hasSynth && k === debateLen) return { kind: 'synth' }
+function fromLinearPos(n: number, debateLen: number): Selection | null {
   if (debateLen < 1) return null
+  const k = ((n % debateLen) + debateLen) % debateLen
   return { kind: 'debate', index: k }
 }
 
@@ -183,12 +142,10 @@ function nextSelection(
   current: Selection | null,
   debateLen: number,
   dir: 1 | -1,
-  hasSynth: boolean
 ): Selection | null {
-  const span = agentSpan(debateLen, hasSynth)
-  if (span < 1) return null
-  const cur = toLinearPos(current, debateLen, hasSynth)
-  return fromLinearPos(cur + dir, debateLen, hasSynth)
+  if (debateLen < 1) return null
+  const cur = toLinearPos(current, debateLen)
+  return fromLinearPos(cur + dir, debateLen)
 }
 
 const NEW_COUNCIL_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
@@ -384,8 +341,8 @@ function PipelineBuiltinPrompts({
         <div>
           <h3 className="text-sm font-semibold text-cyan-200/95">Pipeline defaults (editable fragments)</h3>
           <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
-            Global defaults used by the backend (plan creation after debate, research, specialist JSON shape,
-            routing schema, plan refine). Overrides are stored in{' '}
+            Global defaults used by the backend (artifact creation after discussion, research, agent JSON shape,
+            routing schema, plan refine, prompt-field refinement in this UI). Overrides are stored in{' '}
             <code className="text-slate-600">data/prompt_overrides.json</code> next to the session database — not
             in council JSON.
           </p>
@@ -610,7 +567,6 @@ export function AgentsTab({
       if (next.debating_agents.length) {
         return { kind: 'debate', index: 0 }
       }
-      if (next.synthesizer) return { kind: 'synth' }
       return null
     })
     setEditorOpen(false)
@@ -827,31 +783,6 @@ export function AgentsTab({
     })
   }, [])
 
-  const updateSynth = useCallback((patch: Partial<AgentDef>) => {
-    setConfig((c) => {
-      if (!c) return c
-      const base = c.synthesizer ?? defaultSynthesizer()
-      return { ...c, synthesizer: { ...base, ...patch } }
-    })
-  }, [])
-
-  const addSynthesizer = useCallback(() => {
-    setConfig((c) => {
-      if (!c || c.synthesizer) return c
-      return { ...c, synthesizer: defaultSynthesizer() }
-    })
-  }, [])
-
-  const addSynthesizerAndFocus = useCallback(() => {
-    setConfig((c) => {
-      if (!c || c.synthesizer) return c
-      return { ...c, synthesizer: defaultSynthesizer() }
-    })
-    setSel({ kind: 'synth' })
-    setSaved(false)
-    setEditorOpen(true)
-  }, [])
-
   const updateOrchestrator = useCallback((patch: Partial<AgentDef>) => {
     setConfig((c) => {
       if (!c) return c
@@ -885,12 +816,11 @@ export function AgentsTab({
     setConfig((c) => {
       if (!c) return c
       const taken = new Set(c.debating_agents.map((a) => a.id))
-      if (c.synthesizer) taken.add(c.synthesizer.id)
       taken.add(mergeCouncilDefaults(c).orchestrator!.id)
-      const id = slugAgentId('new debater', taken)
+      const id = slugAgentId('new agent', taken)
       const fresh: AgentDef = {
         id,
-        name: 'New debater',
+        name: 'New agent',
         title: 'Perspective',
         system_prompt: '',
         tools_enabled: true,
@@ -908,7 +838,7 @@ export function AgentsTab({
   const removeDebater = useCallback(
     (index: number) => {
       if (!config || config.debating_agents.length < 1) return
-      if (!window.confirm('Remove this debater from the pipeline?')) return
+      if (!window.confirm('Remove this agent from the council?')) return
       setConfig((c) => {
         if (!c || index < 0 || index >= c.debating_agents.length) return c
         const list = c.debating_agents.filter((_, i) => i !== index)
@@ -916,7 +846,7 @@ export function AgentsTab({
         queueMicrotask(() => {
           setSel((prev) => {
             if (list.length === 0) {
-              return next.synthesizer ? { kind: 'synth' } : null
+              return null
             }
             if (prev?.kind === 'debate') {
               if (prev.index === index) {
@@ -944,9 +874,7 @@ export function AgentsTab({
         if (!c) return c
         const source = c.debating_agents[index]
         if (!source) return c
-        const taken = new Set(
-          c.debating_agents.map((a) => a.id).concat(c.synthesizer ? [c.synthesizer.id] : [])
-        )
+        const taken = new Set(c.debating_agents.map((a) => a.id))
         taken.add(mergeCouncilDefaults(c).orchestrator!.id)
         const newId = slugAgentId(`${source.name} copy`, taken)
         const copy: AgentDef = {
@@ -1031,13 +959,7 @@ export function AgentsTab({
         setBaselineSig(configSignature(merged))
         setSaveError(null)
         setSaved(false)
-        setSel(
-          parsed.debating_agents.length
-            ? { kind: 'debate', index: 0 }
-            : parsed.synthesizer
-              ? { kind: 'synth' }
-              : null
-        )
+        setSel(parsed.debating_agents.length ? { kind: 'debate', index: 0 } : null)
         setEditorOpen(false)
       })
     },
@@ -1048,8 +970,7 @@ export function AgentsTab({
     setSel((s) => {
       const c = configRef.current
       if (!c) return s
-      const hasSynth = c.synthesizer != null
-      return nextSelection(s, c.debating_agents.length, dir, hasSynth)
+      return nextSelection(s, c.debating_agents.length, dir)
     })
   }, [])
 
@@ -1099,13 +1020,9 @@ export function AgentsTab({
 
   const selectedAgent = useMemo(() => {
     if (!config || !sel) return null
-    if (sel.kind === 'synth') {
-      if (!config.synthesizer) return null
-      return { role: 'synth' as const, agent: config.synthesizer }
-    }
     const ag = config.debating_agents[sel.index]
     if (!ag) return null
-    return { role: 'debate' as const, index: sel.index, agent: ag }
+    return { index: sel.index, agent: ag }
   }, [config, sel])
 
   const councilAllIds = useMemo(() => {
@@ -1114,7 +1031,6 @@ export function AgentsTab({
     const s = new Set<string>()
     if (m.orchestrator) s.add(m.orchestrator.id)
     for (const a of m.debating_agents) s.add(a.id)
-    if (m.synthesizer) s.add(m.synthesizer.id)
     return s
   }, [config])
 
@@ -1133,7 +1049,6 @@ export function AgentsTab({
   }
 
   const debaters = config.debating_agents
-  const synth = config.synthesizer
   const orch = mergeCouncilDefaults(config).orchestrator!
   const canRemoveDebate = debaters.length >= 1
 
@@ -1416,16 +1331,18 @@ export function AgentsTab({
           <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/25 to-slate-950/50 p-4 sm:p-5 space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-violet-200/95">
-                Specialist &amp; optional synthesizer prompts
+                Council agent prompts
               </h3>
               <p className="text-[11px] text-slate-500 mt-1 leading-relaxed max-w-2xl">
-                System prompts for each role. Reorder, add, or remove agents in the{' '}
-                <span className="text-slate-400">Council agents</span> tab.
+                System prompt per agent the orchestrator can call. Add and reorder agents in the{' '}
+                <span className="text-slate-400">Council agents</span> pipeline below. The orchestrator alone
+                decides flow; there is no separate “synthesizer” or “planner” role in the council JSON — only
+                agents you define plus optional backend formatting for structured plan/report/code output modes.
               </p>
             </div>
             {debaters.length === 0 ? (
               <div className="rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-slate-500">
-                No debating agents yet. Add them under{' '}
+                No council agents yet. Add them under{' '}
                 <span className="text-slate-300">Council agents</span>, then edit their prompts here.
               </div>
             ) : (
@@ -1433,38 +1350,13 @@ export function AgentsTab({
                 {debaters.map((ag, i) => (
                   <AgentSystemPromptCard
                     key={ag.id}
-                    roleLabel={`Specialist ${i + 1}`}
+                    roleLabel={`Agent ${i + 1}`}
                     agent={ag}
                     onChange={(p) => updateDebater(i, p)}
                     refineModels={refineModels}
                     refineDefaultModel={refineModel}
                   />
                 ))}
-              </div>
-            )}
-            {synth ? (
-              <AgentSystemPromptCard
-                roleLabel="Synthesizer"
-                agent={synth}
-                onChange={updateSynth}
-                refineModels={refineModels}
-                refineDefaultModel={refineModel}
-              />
-            ) : (
-              <div className="rounded-xl border border-dashed border-violet-500/25 bg-black/20 px-4 py-6 space-y-3">
-                <p className="text-sm text-slate-400 leading-relaxed">
-                  No synthesizer on this council. The orchestrator will not offer{' '}
-                  <code className="text-slate-500">call_synthesizer</code>; debate goes straight to
-                  planning (with a short placeholder summary in the plan step). Add one if you want
-                  a dedicated “align tensions” pass before <code className="text-slate-500">plan.md</code>.
-                </p>
-                <button
-                  type="button"
-                  onClick={addSynthesizer}
-                  className="text-sm font-medium text-violet-400 hover:text-violet-300"
-                >
-                  + Add synthesizer
-                </button>
               </div>
             )}
           </div>
@@ -1497,19 +1389,22 @@ export function AgentsTab({
               onClick={addDebater}
               className="text-xs font-medium text-violet-300 hover:text-violet-200"
             >
-              + Add debater
+              + Add agent
             </button>
             </div>
           </div>
 
           <div className="flex flex-col items-stretch min-w-[min(100%,18rem)]">
-            <p className="text-[9px] text-slate-500 mb-2">1 · Debating agents (in order each round)</p>
+            <p className="text-[9px] text-slate-500 mb-2">
+              1 · Council agents (optional; orchestrator routes via <code className="text-slate-600">call_agents</code>)
+            </p>
             <div className="flex flex-wrap justify-center sm:flex-nowrap sm:justify-center items-center gap-y-2 gap-x-0">
               {debaters.length === 0 ? (
                 <p className="text-center text-xs text-slate-500 py-4 px-3 max-w-md leading-relaxed">
-                  No debating agents yet. Use{' '}
-                  <span className="text-violet-300 font-medium">+ Add debater</span> below. You need
-                  at least one before running a chat.
+                  No council agents yet. Use{' '}
+                  <span className="text-violet-300 font-medium">+ Add agent</span> to add fully configurable roles
+                  (name, routing id, system prompt, tools). Optional: you can run orchestrator-only — no agents — and
+                  still use research and chat-only or artifact modes.
                 </p>
               ) : (
                 debaters.map((ag, i) => (
@@ -1520,7 +1415,6 @@ export function AgentsTab({
                       subtitle={ag.title}
                       id={ag.id}
                       tools={ag.tools_enabled}
-                      variant="debate"
                       step={i + 1}
                       selected={sel?.kind === 'debate' && sel.index === i}
                       onSelect={() => {
@@ -1534,42 +1428,12 @@ export function AgentsTab({
               )}
             </div>
 
-            <div className="flex justify-center my-1">
-              <EdgeV />
-            </div>
-            <p className="text-center text-[9px] text-slate-500 -mt-0.5 mb-1">
-              {synth ? 'merge & align' : 'optional merge'}
+            <p className="text-center text-[10px] text-slate-500 mt-2 max-w-md mx-auto leading-relaxed">
+              The orchestrator (edited above) routes each step. Add any number of agents; use{' '}
+              <code className="text-slate-600">call_agents</code> in routing guidelines to run them. Optional output
+              modes (plan / report / code) use shared backend formatters after discussion — not separate council
+              personas.
             </p>
-
-            <div className="flex justify-center">
-              {synth ? (
-                <GraphNode
-                  label={synth.name}
-                  subtitle={synth.title}
-                  id={synth.id}
-                  tools={synth.tools_enabled}
-                  variant="synth"
-                  selected={sel?.kind === 'synth'}
-                  onSelect={() => {
-                    setSel({ kind: 'synth' })
-                    setSaved(false)
-                    setEditorOpen(true)
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={addSynthesizerAndFocus}
-                  className="rounded-xl border border-dashed border-violet-500/35 bg-violet-950/15 px-4 py-6 text-center text-sm text-violet-200/90 hover:bg-violet-950/25 max-w-sm"
-                >
-                  <span className="font-medium">+ Add synthesizer</span>
-                  <span className="block text-[11px] text-slate-500 mt-2 leading-relaxed font-normal">
-                    Optional step: condense specialist debate before the planner. Skip if you want a
-                    slimmer pipeline.
-                  </span>
-                </button>
-              )}
-            </div>
           </div>
 
           <ul className="mt-4 space-y-1.5 text-[10px] text-slate-500 border-t border-white/5 pt-3">
@@ -1608,170 +1472,100 @@ export function AgentsTab({
                 className="relative z-10 flex w-full max-w-2xl min-h-0 flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-[#0c0e16] shadow-2xl sm:mt-0 sm:max-h-[min(90dvh,56rem)] sm:rounded-2xl max-h-[92dvh]"
                 onClick={(e) => e.stopPropagation()}
               >
-                {selectedAgent.role === 'synth' ? (
-                  <>
-                    <div className="shrink-0 flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
-                      <div>
-                        <h2
-                          id="council-editor-title"
-                          className="text-base font-semibold text-violet-200"
-                        >
-                          Synthesizer
-                        </h2>
-                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                          {selectedAgent.agent.id}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => onNavAgent(-1)}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2.5 py-1.5 text-slate-300 hover:bg-white/[0.05]"
-                          title="Previous debater (Alt+↑)"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onNavAgent(1)}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2.5 py-1.5 text-slate-300 hover:bg-white/[0.05]"
-                          title="First debater (Alt+↓)"
-                        >
-                          ↓
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditorOpen(false)}
-                          className="ml-1 rounded-lg border border-slate-600/50 p-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
-                          aria-label="Close"
-                        >
-                          <svg
-                            className="h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                            aria-hidden
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M6 18L18 6M6 6l12 12"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
-                      <AgentFields
-                        agent={selectedAgent.agent}
-                        onChange={updateSynth}
-                        promptMinH="min-h-[12rem] sm:min-h-[16rem]"
-                        idContext={{ allIds: councilAllIds }}
-                        refineModels={refineModels}
-                        refineDefaultModel={refineModel}
-                        refineContextLabel="Synthesizer system prompt"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="shrink-0 flex items-start justify-between gap-2 border-b border-white/10 px-4 py-3 sm:px-5 flex-wrap">
-                      <div>
-                        <h2
-                          id="council-editor-title"
-                          className="text-base font-semibold text-slate-100"
-                        >
-                          {selectedAgent.agent.name || 'Agent'}
-                        </h2>
-                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                          {selectedAgent.agent.id} · order {selectedAgent.index + 1} of {debaters.length}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-end gap-1 max-w-full">
-                        <button
-                          type="button"
-                          onClick={() => onNavAgent(-1)}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05]"
-                          title="Previous node (Alt+↑)"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onNavAgent(1)}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05]"
-                          title="Next node (Alt+↓)"
-                        >
-                          ↓
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveDebater(selectedAgent.index, -1)}
-                          disabled={selectedAgent.index === 0}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05] disabled:opacity-30"
-                        >
-                          ←
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveDebater(selectedAgent.index, 1)}
-                          disabled={selectedAgent.index >= debaters.length - 1}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05] disabled:opacity-30"
-                        >
-                          →
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => duplicateDebater(selectedAgent.index)}
-                          className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05]"
-                        >
-                          Duplicate
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeDebater(selectedAgent.index)}
-                          disabled={!canRemoveDebate}
-                          className="text-xs rounded-lg border border-rose-500/30 px-2 py-1 text-rose-200/90 hover:bg-rose-500/10 disabled:opacity-30"
-                        >
-                          Remove
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditorOpen(false)}
-                          className="ml-auto rounded-lg border border-slate-600/50 p-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 sm:ml-0"
-                          aria-label="Close"
-                        >
-                          <svg
-                            className="h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                            aria-hidden
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M6 18L18 6M6 6l12 12"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
-                      <AgentFields
-                        agent={selectedAgent.agent}
-                        onChange={(p) => updateDebater(selectedAgent.index, p)}
-                        promptMinH="min-h-[12rem] sm:min-h-[16rem]"
-                        idContext={{ allIds: councilAllIds }}
-                        refineModels={refineModels}
-                        refineDefaultModel={refineModel}
-                        refineContextLabel={`Specialist ${selectedAgent.index + 1} system prompt`}
-                      />
-                    </div>
-                  </>
-                )}
+                <div className="shrink-0 flex items-start justify-between gap-2 border-b border-white/10 px-4 py-3 sm:px-5 flex-wrap">
+                  <div>
+                    <h2
+                      id="council-editor-title"
+                      className="text-base font-semibold text-slate-100"
+                    >
+                      {selectedAgent.agent.name || 'Agent'}
+                    </h2>
+                    <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                      {selectedAgent.agent.id} · order {selectedAgent.index + 1} of {debaters.length}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-1 max-w-full">
+                    <button
+                      type="button"
+                      onClick={() => onNavAgent(-1)}
+                      className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05]"
+                      title="Previous node (Alt+↑)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onNavAgent(1)}
+                      className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05]"
+                      title="Next node (Alt+↓)"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveDebater(selectedAgent.index, -1)}
+                      disabled={selectedAgent.index === 0}
+                      className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05] disabled:opacity-30"
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveDebater(selectedAgent.index, 1)}
+                      disabled={selectedAgent.index >= debaters.length - 1}
+                      className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05] disabled:opacity-30"
+                    >
+                      →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => duplicateDebater(selectedAgent.index)}
+                      className="text-xs rounded-lg border border-slate-600/50 px-2 py-1 text-slate-300 hover:bg-white/[0.05]"
+                    >
+                      Duplicate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeDebater(selectedAgent.index)}
+                      disabled={!canRemoveDebate}
+                      className="text-xs rounded-lg border border-rose-500/30 px-2 py-1 text-rose-200/90 hover:bg-rose-500/10 disabled:opacity-30"
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditorOpen(false)}
+                      className="ml-auto rounded-lg border border-slate-600/50 p-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 sm:ml-0"
+                      aria-label="Close"
+                    >
+                      <svg
+                        className="h-4 w-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.5}
+                        aria-hidden
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+                  <AgentFields
+                    agent={selectedAgent.agent}
+                    onChange={(p) => updateDebater(selectedAgent.index, p)}
+                    promptMinH="min-h-[12rem] sm:min-h-[16rem]"
+                    idContext={{ allIds: councilAllIds }}
+                    refineModels={refineModels}
+                    refineDefaultModel={refineModel}
+                    refineContextLabel={`Agent ${selectedAgent.index + 1} system prompt`}
+                  />
+                </div>
 
                 <div className="shrink-0 space-y-3 border-t border-white/10 bg-[#090a0e] px-4 py-3 sm:px-5 sm:rounded-b-2xl">
                   {saveToServerRow}
@@ -1897,7 +1691,7 @@ function AgentFields({
   agent: AgentDef
   onChange: (p: Partial<AgentDef>) => void
   promptMinH: string
-  /** When set, show routing id + slug helper (specialists & synthesizer). */
+  /** When set, show routing id + slug helper (orchestrator roster ids). */
   idContext?: { allIds: Set<string> }
   refineModels?: string[]
   refineDefaultModel?: string

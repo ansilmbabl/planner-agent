@@ -4,23 +4,44 @@ export function SettingsFlowOverview() {
       <div>
         <h3 className="text-sm font-semibold text-slate-100">How a run works</h3>
         <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-          You chat on the left; the <span className="text-slate-200">council</span> is a scripted pipeline behind
-          the scenes. The <span className="text-slate-200">orchestrator</span> decides each step; specialists only
-          run when it picks them. The <span className="text-slate-200">Output</span> panel shows the council&apos;s
-          primary deliverable — plan, report, code, nil, or chat-only. In the main window, open Outputs →
-          Research to add your own URLs; they are fetched into the same research brief as web search.
+          You chat on the left; the <span className="text-slate-200">council</span> is driven behind the scenes by
+          the <span className="text-slate-200">orchestrator</span> persona you configure. It chooses each step;
+          <span className="text-slate-200"> agents</span> you add to the roster only run when it routes to them
+          (for example via <code className="text-slate-500">call_agents</code>). The{' '}
+          <span className="text-slate-200">Output</span> panel holds the primary deliverable for the run — plan,
+          report, code, none, or chat-only. In the main window, open Outputs → Research to add URLs; they merge into
+          the same research brief as web search.
         </p>
       </div>
 
       <div className="rounded-2xl border border-white/[0.08] bg-gradient-to-b from-slate-900/50 to-slate-950/80 p-4 sm:p-5">
         <div className="flex flex-col gap-3">
           {[
-            { n: '1', t: 'Message', d: 'Your idea lands in the session; optional web research if the orchestrator chooses it.' },
-            { n: '2', t: 'Orchestrator loop', d: 'Each step: model reads transcript + research + roster → JSON action (call agents, ask you, synthesizer, ready for artifact…).' },
-            { n: '3', t: 'Specialists', d: 'Parallel JSON “turns” (reaction, planner note, optional question). Order is orchestrator-driven, not a fixed round-robin.' },
-            { n: '4', t: 'Synthesizer (optional)', d: 'One alignment pass before planning if configured and called.' },
-            { n: '5', t: 'Primary output', d: 'Depending on council settings: structured plan, markdown report, code file, or no file (conversation-only).' },
-            { n: '6', t: 'Refine output', d: 'Optional: Output tab — LLM edit of the latest file using merged persona prompts + your instruction.' },
+            {
+              n: '1',
+              t: 'Message',
+              d: 'Your idea lands in the session; optional web research if the orchestrator chooses it.',
+            },
+            {
+              n: '2',
+              t: 'Orchestrator loop',
+              d: 'Each step: model reads transcript + research + roster → one JSON action (call agents, ask you, primary output, end, …).',
+            },
+            {
+              n: '3',
+              t: 'Agents',
+              d: 'Structured JSON “turns” per specialist id the orchestrator picked. Parallel batch, order, and repeats are all routing decisions — not a fixed pipeline.',
+            },
+            {
+              n: '4',
+              t: 'Primary output',
+              d: 'Depending on council settings: structured plan, markdown report, code file, or no file (conversation-only).',
+            },
+            {
+              n: '5',
+              t: 'Refine output',
+              d: 'Optional: Output tab — LLM edit of the latest file using merged persona prompts + your instruction.',
+            },
           ].map((row) => (
             <div
               key={row.n}

@@ -57,9 +57,7 @@ class CouncilSession:
     plan_versions: list[dict[str, Any]] = field(default_factory=list)
     error_message: str | None = None
     user_answered_clarification: bool = False
-    synthesizer_ran: bool = False
-    last_synth_summary: str = ""
-    # When True after orchestration, skip synthesizer + plan.md and end after chat.
+    # When True after orchestration, skip primary artifact and end after chat.
     skip_implementation_plan: bool = False
     # plan | report | code | conversation | none — what the last run produced (or conversation-only).
     artifact_kind: str = ""

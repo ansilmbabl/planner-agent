@@ -96,7 +96,6 @@ def new_orchestrator_only_council() -> CouncilConfigFile:
 
     return CouncilConfigFile(
         debating_agents=[],
-        synthesizer=None,
         orchestrator=AgentDef(
             id="orchestrator",
             name="Orchestrator",

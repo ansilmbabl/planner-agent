@@ -55,8 +55,11 @@ def _personas_for_refine(
         low = rid.lower()
         if low == "orchestrator":
             add(effective_orchestrator(council), effective_orchestrator(council).name)
-        elif low == "synthesizer" and council.synthesizer:
-            add(council.synthesizer, council.synthesizer.name)
+        elif low == "synthesizer":
+            for d in council.debating_agents:
+                if d.id == rid:
+                    add(d, d.name)
+                    break
         else:
             for d in council.debating_agents:
                 if d.id == rid:

@@ -23,19 +23,17 @@ export function PromptPipelineMap() {
           <li>
             <span className="text-slate-200">Orchestrator (many turns)</span> chooses{' '}
             <code className="text-slate-500">run_research</code>, <code className="text-slate-500">call_agents</code>,{' '}
-            <code className="text-slate-500">call_synthesizer</code>, etc.
+            and other actions from the routing schema — there is no separate built-in “synthesizer” step.
           </li>
           <li>
             <span className="text-slate-200">Research</span> (if chosen): planner → web → summarizer brief.
           </li>
           <li>
-            <span className="text-slate-200">Specialists</span> (if chosen): each gets a structured JSON turn.
+            <span className="text-slate-200">Agents</span> (if chosen): each gets a structured JSON turn.
           </li>
           <li>
-            <span className="text-slate-200">Synthesizer</span> (optional): alignment summary from council JSON.
-          </li>
-          <li>
-            <span className="text-slate-200">Plan writer</span> → <code className="text-slate-500">plan.md</code>.
+            <span className="text-slate-200">Plan writer</span> (when the run requests the primary artifact) →{' '}
+            <code className="text-slate-500">plan.md</code> or the configured filename.
           </li>
           <li>
             <span className="text-slate-200">Plan refine</span> (later, Plan tab): personas + markdown plan + your instruction.
@@ -77,7 +75,7 @@ USER    = template(round, prior rounds, research, same-round context…)
 {`SYSTEM  = pipeline["plan_writer_system"]
 
 USER    = pipeline["plan_json_schema_hint"]
-         + user idea, prior plan, research, synthesizer summary, transcript excerpt
+         + user idea, prior plan, research, discussion summary, transcript excerpt
          + pipeline["plan_writer_user_footer"]`}
           </pre>
         </div>
@@ -93,9 +91,26 @@ Summarize SYSTEM + results + pipeline["research_summarizer_user_closing"]`}
         <div className="rounded-xl border border-slate-600/40 bg-slate-900/30 p-3 space-y-2">
           <div className="text-[11px] font-semibold text-slate-200/90">Refine plan (Plan tab)</div>
           <pre className="text-[10px] text-slate-500 font-mono leading-relaxed whitespace-pre-wrap">
-{`SYSTEM  = joined persona system prompts (orchestrator / debaters / synth)
+{`SYSTEM  = joined persona system prompts (orchestrator + selected agent ids)
 USER    = full plan.md + instruction + pipeline["plan_refine_user_suffix"]`}
           </pre>
+        </div>
+
+        <div className="rounded-xl border border-fuchsia-500/20 bg-fuchsia-950/15 p-3 space-y-2">
+          <div className="text-[11px] font-semibold text-fuchsia-200/90">Refine field with model (Settings)</div>
+          <pre className="text-[10px] text-slate-500 font-mono leading-relaxed whitespace-pre-wrap">
+{`SYSTEM  = pipeline["refine_prompt_system"]
+
+USER    = pipeline["refine_prompt_user_template"]
+          filled with {{LABEL}}, {{CURRENT_PROMPT}}, {{INSTRUCTION}}
+          ({{INSTRUCTION}} = user tweaks or pipeline["refine_prompt_default_instruction"])`}
+          </pre>
+          <p className="text-[10px] text-slate-500">
+            Used in <span className="text-slate-400">Pipeline defaults</span> edit areas and council prompt fields (
+            <span className="text-slate-400">Refine with model</span>). Response must use{' '}
+            <code className="text-slate-600">{'<<<PROMPT_START>>>'}</code> /{' '}
+            <code className="text-slate-600">{'<<<PROMPT_END>>>'}</code> so the API returns clean text only.
+          </p>
         </div>
       </div>
     </div>

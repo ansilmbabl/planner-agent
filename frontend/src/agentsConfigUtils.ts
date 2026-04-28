@@ -1,25 +1,13 @@
 import type { AgentDef, CouncilConfig, OutputMode } from './api'
 
-const DEFAULT_SYNTH: AgentDef = {
-  id: 'synthesizer',
-  name: 'Synthesizer',
-  title: 'Alignment',
-  system_prompt: '',
-  tools_enabled: false,
-}
-
 /** Matches backend default when council has no orchestrator object. */
 export const DEFAULT_ORCHESTRATOR_AGENT: AgentDef = {
   id: 'orchestrator',
   name: 'Orchestrator',
   title: 'Routing and flow',
   system_prompt:
-    'You are the Council Orchestrator. Choose exactly ONE next step for the multi-agent workflow (research, specialists, synthesizer, user questions, or finishing). Route only; do not role-play as a specialist.',
+    'You are the Council Orchestrator. Choose exactly ONE next step: research, calling agents by id, asking the user, replying yourself, requesting the configured primary output, or ending. Route only; do not role-play as a council agent.',
   tools_enabled: false,
-}
-
-export function defaultSynthesizer(): AgentDef {
-  return { ...DEFAULT_SYNTH }
 }
 
 /** Normalize optional council fields so the settings UI always has orchestrator + instructions string. */
@@ -32,8 +20,6 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
   return {
     ...c,
     initial_research: c.initial_research !== false,
-    /** Omit or null = no synthesizer step (backend skips call_synthesizer). */
-    synthesizer: c.synthesizer ?? null,
     orchestrator: c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT,
     orchestrator_user_instructions: c.orchestrator_user_instructions ?? '',
     output_mode: om,
@@ -86,13 +72,15 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     debaters.push(a)
   }
 
-  let synthesizer: AgentDef | null = null
   if (o.synthesizer != null && typeof o.synthesizer === 'object') {
     const s = normalizeAgentFromJson(
       o.synthesizer as Record<string, unknown>,
-      DEFAULT_SYNTH.id
+      'synthesizer'
     )
-    if (s) synthesizer = s
+    if (s && !usedIds.has(s.id)) {
+      usedIds.add(s.id)
+      debaters.push(s)
+    }
   }
 
   let orchestrator: AgentDef | null = null
@@ -134,7 +122,6 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
 
   return {
     debating_agents: debaters,
-    synthesizer,
     ...(orchestrator ? { orchestrator } : {}),
     ...(orchestrator_user_instructions !== undefined
       ? { orchestrator_user_instructions }
@@ -174,7 +161,6 @@ export function councilConfigToJsonString(c: CouncilConfig): string {
     o.artifact_filename = c.artifact_filename.trim()
   }
   o.debating_agents = c.debating_agents
-  o.synthesizer = c.synthesizer
   return JSON.stringify(o, null, 2)
 }
 

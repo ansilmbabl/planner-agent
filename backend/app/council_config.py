@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AgentDef(BaseModel):
@@ -32,13 +32,34 @@ class ReferenceUrl(BaseModel):
 class CouncilConfigFile(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    debating_agents: list[AgentDef] = Field(default_factory=list)
-    synthesizer: AgentDef | None = None
+    debating_agents: list[AgentDef] = Field(
+        default_factory=list,
+        description="User-defined agents the orchestrator invokes via call_agents (ids must be unique).",
+    )
     orchestrator: AgentDef | None = Field(
         default=None,
-        description="Routes each step: which specialist, synthesizer, user, or plan. "
-        "If omitted, the backend uses a built-in orchestrator prompt.",
+        description="Routes each step. If omitted, the backend uses a built-in orchestrator prompt.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_legacy_synthesizer_into_agents(cls, data: Any) -> Any:
+        """Older council JSON used a separate synthesizer object; fold it into debating_agents."""
+        if not isinstance(data, dict):
+            return data
+        syn = data.pop("synthesizer", None)
+        agents: list[Any] = list(data.get("debating_agents") or [])
+        if isinstance(syn, dict) and str(syn.get("id") or "").strip():
+            sid = str(syn["id"]).strip()
+            existing = {
+                str(a.get("id", "")).strip()
+                for a in agents
+                if isinstance(a, dict)
+            }
+            if sid not in existing:
+                agents.append(syn)
+        data["debating_agents"] = agents
+        return data
     orchestrator_user_instructions: str | None = Field(
         default=None,
         description="Inserted into the routing user message under 'Routing guidelines'. "

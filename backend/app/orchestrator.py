@@ -125,7 +125,7 @@ async def _artifact_report_writer(
         "## Task context",
         f"User / council brief:\n{user_brief[:8000]}",
         f"\n## Research & references\n{research_brief[:12000]}",
-        f"\n## Alignment summary\n{syn_text[:6000]}",
+        f"\n## Discussion summary\n{syn_text[:6000]}",
         f"\n## Council transcript\n{all_turns[:14000]}",
     ]
     if (extra or "").strip():
@@ -158,7 +158,7 @@ async def _artifact_code_writer(
         f"Target filename hint: {filename_hint or 'output'}",
         f"\nUser / council brief:\n{user_brief[:8000]}",
         f"\nResearch & references:\n{research_brief[:12000]}",
-        f"\nAlignment:\n{syn_text[:4000]}",
+        f"\nDiscussion summary:\n{syn_text[:4000]}",
         f"\nCouncil notes:\n{all_turns[:12000]}",
     ]
     if (extra or "").strip():
@@ -207,9 +207,6 @@ def _agent_label_map(council: CouncilConfigFile, debaters: list[AgentDef]) -> di
     m: dict[str, str] = {o.id: o.name}
     for d in debaters:
         m[d.id] = d.name
-    if council.synthesizer:
-        s = council.synthesizer
-        m[s.id] = s.name
     return m
 
 
@@ -239,8 +236,6 @@ def _normalize_orch_decision(
     data: dict[str, Any],
     debaters: list[AgentDef],
     agent_turns: list[dict[str, Any]],
-    synth_available: bool,
-    synth_done: bool,
     max_parallel: int,
 ) -> tuple[str, list[str], list[str], str]:
     debater_ids = {a.id for a in debaters}
@@ -255,9 +250,10 @@ def _normalize_orch_decision(
         "callagents": "call_agents",
         "parallel": "call_agents",
         "parallel_agents": "call_agents",
-        "synthesizer": "call_synthesizer",
-        "synth": "call_synthesizer",
-        "merge": "call_synthesizer",
+        "synthesizer": "call_agents",
+        "synth": "call_agents",
+        "merge": "call_agents",
+        "call_synthesizer": "call_agents",
         "human": "ask_user",
         "hitl": "ask_user",
         "askuser": "ask_user",
@@ -313,7 +309,6 @@ def _normalize_orch_decision(
 
     if action not in (
         "call_agents",
-        "call_synthesizer",
         "ask_user",
         "ready_for_plan",
         "orchestrator_reply",
@@ -321,12 +316,6 @@ def _normalize_orch_decision(
         "run_research",
     ):
         action = "call_agents"
-        agent_ids_out = []
-    if action == "call_synthesizer" and not synth_available:
-        action = "call_agents"
-        agent_ids_out = []
-    if action == "call_synthesizer" and synth_done:
-        action = "ready_for_plan"
         agent_ids_out = []
     if action == "ask_user" and not questions:
         questions = [
@@ -336,7 +325,6 @@ def _normalize_orch_decision(
     if action in (
         "ask_user",
         "ready_for_plan",
-        "call_synthesizer",
         "orchestrator_done",
         "orchestrator_reply",
         "run_research",
@@ -360,8 +348,6 @@ async def _orchestrator_decide(
     research_brief: str,
     transcript_summary: str,
     debaters: list[AgentDef],
-    synth_available: bool,
-    synth_done: bool,
     step_n: int,
     max_steps: int,
     council: CouncilConfigFile,
@@ -374,8 +360,6 @@ async def _orchestrator_decide(
         transcript_summary=transcript_summary,
         roster=roster,
         id_list=id_list,
-        synth_available=synth_available,
-        synth_done=synth_done,
         step_n=step_n,
         max_steps=max_steps,
         instructions=council.orchestrator_user_instructions,
@@ -415,37 +399,6 @@ Answer the user now."""
         model=model,
         temperature=0.3,
     )
-
-
-async def _run_synthesizer_step(
-    settings: Settings,
-    session: CouncilSession,
-    council: CouncilConfigFile,
-) -> AsyncIterator[dict[str, Any]]:
-    s = session
-    syn = council.synthesizer
-    if not syn or s.synthesizer_ran:
-        return
-    all_turns_txt = _turns_to_transcript(s.agent_turns)
-    syn_text = await _synthesizer(
-        settings,
-        syn,
-        s.model,
-        council_prompt_brief(s),
-        s.research_brief,
-        all_turns_txt,
-    )
-    s.synthesizer_ran = True
-    s.last_synth_summary = syn_text
-    s.messages.append(
-        ChatMessage(
-            role="assistant",
-            content=syn_text,
-            agent_id=syn.id,
-            agent_name=syn.name,
-        )
-    )
-    yield {"type": "synth", "summary": syn_text}
 
 
 def _dedupe_qs(questions: list[str]) -> list[str]:
@@ -630,32 +583,6 @@ async def _agent_turn(
     }
 
 
-async def _synthesizer(
-    settings: Settings,
-    syn: AgentDef,
-    model: str,
-    user_brief: str,
-    research_brief: str,
-    all_turns: str,
-) -> str:
-    system = syn.system_prompt
-    user = f"""# Align views (no new product debate)
-
-User idea:
-{user_brief}
-
-Research:
-{research_brief}
-
-Council transcript:
-{all_turns}
-
-Return JSON: {{"aligned_summary": "5-8 bullets: agreements, tensions, direction"}}
-"""
-    d = await complete_structured_json(settings, system, user, model=model)
-    return str(d.get("aligned_summary", "")).strip()
-
-
 async def _plan_writer(
     settings: Settings,
     model: str,
@@ -687,7 +614,7 @@ async def _plan_writer(
 ## Research
 {research_brief}
 
-## Synthesized alignment
+## Discussion summary (from agent turns)
 {syn_summary}
 
 ## Council detail
@@ -749,8 +676,6 @@ async def _orchestrate_discussion_loop(
             s.research_brief,
             transcript,
             debaters,
-            council.synthesizer is not None,
-            s.synthesizer_ran,
             step_n,
             max_steps,
             council,
@@ -759,8 +684,6 @@ async def _orchestrate_discussion_loop(
             raw,
             debaters,
             s.agent_turns,
-            council.synthesizer is not None,
-            s.synthesizer_ran,
             settings.orchestration_max_parallel_agents,
         )
         key = f"{action}:{','.join(sorted(agent_ids))}"
@@ -875,11 +798,6 @@ async def _orchestrate_discussion_loop(
         if action == "ready_for_plan":
             break
 
-        if action == "call_synthesizer":
-            async for ev in _run_synthesizer_step(settings, s, council):
-                yield ev
-            continue
-
         if action == "call_agents":
             agents_to_run = [
                 ag for i in agent_ids if (ag := _debater_by_id(debaters, i)) is not None
@@ -939,8 +857,6 @@ async def _orchestrate_discussion_loop(
 
     if s.phase == SessionPhase.awaiting_user:
         return
-    async for ev in _run_synthesizer_step(settings, s, council):
-        yield ev
 
 
 async def run_council_pipeline(
@@ -995,8 +911,6 @@ async def run_council_pipeline(
                 s.agent_turns = []
                 s.user_answered_clarification = False
                 s.last_consolidated_questions = []
-                s.synthesizer_ran = False
-                s.last_synth_summary = ""
                 s.discussion_round = 0
                 s.phase = SessionPhase.discussion
                 yield {
@@ -1016,8 +930,6 @@ async def run_council_pipeline(
                     archive_current_plan(s, "before_new_run")
                 s.plan_markdown = ""
                 s.last_consolidated_questions = []
-                s.synthesizer_ran = False
-                s.last_synth_summary = ""
                 s.discussion_round = 0
 
                 s.research_sources = []
@@ -1066,13 +978,8 @@ async def run_council_pipeline(
 
     try:
         all_turns_txt = _turns_to_transcript(s.agent_turns)
-        syn_text = (
-            (s.last_synth_summary or "").strip()
-            if council.synthesizer
-            else "No synthesizer; see council detail."
-        )
-        if council.synthesizer and not syn_text:
-            syn_text = "No synthesizer; see council detail."
+        discussion_summary = _turns_to_summary(s.agent_turns).strip()
+        syn_text = discussion_summary or "_(no agent discussion notes yet)_"
 
         await _inject_reference_urls(settings, s, "before_artifact")
 
@@ -1106,7 +1013,7 @@ async def run_council_pipeline(
             s.plan_filename = _artifact_filename_for_mode(council, mode, spec.title)
             s.artifact_kind = "plan"
             assistant_msg = f"`{s.plan_filename}` is ready. Download below."
-            agent_name = "Planner"
+            agent_name = "Structured plan output"
         elif mode == "report":
             s.plan_markdown = await _artifact_report_writer(
                 settings,
@@ -1120,7 +1027,7 @@ async def run_council_pipeline(
             s.plan_filename = _artifact_filename_for_mode(council, mode)
             s.artifact_kind = "report"
             assistant_msg = f"Report `{s.plan_filename}` is ready."
-            agent_name = "Report writer"
+            agent_name = "Report output"
         else:
             fn_hint = (council.artifact_filename or "").strip() or "output.txt"
             s.plan_markdown = await _artifact_code_writer(
@@ -1136,7 +1043,7 @@ async def run_council_pipeline(
             s.plan_filename = _artifact_filename_for_mode(council, mode)
             s.artifact_kind = "code"
             assistant_msg = f"Code file `{s.plan_filename}` is ready."
-            agent_name = "Code writer"
+            agent_name = "Code output"
 
         s.plan_iteration_message = ""
         s.phase = SessionPhase.done
