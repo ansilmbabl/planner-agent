@@ -11,7 +11,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .council_config import (
     CouncilConfigFile,
@@ -25,8 +25,22 @@ from .councils import (
     list_council_ids,
     load_council,
     new_orchestrator_only_council,
-    save_council,
     validate_council_id,
+)
+from .council_versions import (
+    add_council_version,
+    delete_all_versions_for_council,
+    delete_council_version,
+    list_council_versions,
+    load_council_version,
+    save_council_with_backup,
+    validate_version_id,
+    write_council_without_backup,
+)
+from .council_bootstrap import (
+    apply_council_bootstrap_patch,
+    parse_bootstrap_llm_json,
+    roster_json_for_prompt,
 )
 from .config import Settings, get_settings
 from .llm import (
@@ -44,6 +58,7 @@ from .session_persistence import DatabaseSessionStore, migrate_json_dir_to_db
 from .user_preferences import load_preferences, save_preferences
 from .prompt_catalog import (
     PIPELINE_PROMPT_META,
+    format_council_bootstrap_user_template,
     format_refine_prompt_user_template,
     get_prompt,
     list_prompts_for_api,
@@ -204,13 +219,97 @@ class CreateCouncilBody(BaseModel):
         default="default",
         description='Template council to copy, or "none" for orchestrator-only starter (add agents in UI).',
     )
+    display_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Human-readable name stored in the council JSON (optional).",
+    )
+    notes: str | None = Field(default=None, max_length=12000)
+    tags: list[str] = Field(default_factory=list, max_length=48)
+    area: str | None = Field(default=None, max_length=500)
+    autofill_prompts: bool = Field(
+        default=False,
+        description="If true, call the configured LLM to draft orchestrator and specialist system prompts.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Model id for autofill; provider default if omitted.",
+    )
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_create_tags(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for x in v:
+            if not isinstance(x, str):
+                continue
+            s = x.strip()[:80]
+            if s:
+                out.append(s)
+            if len(out) >= 48:
+                break
+        return out
+
+
+class RegenerateCouncilBody(BaseModel):
+    model: str | None = Field(
+        default=None,
+        description="Model id for council bootstrap; provider default if omitted.",
+    )
 
 
 _NONE_TEMPLATE = frozenset({"", "none", "__none__"})
 
 
+async def _autofill_new_council_prompts(
+    cfg: CouncilConfigFile,
+    *,
+    council_id: str,
+    display_name: str,
+    notes: str,
+    tags: list[str],
+    area: str,
+    template_label: str,
+    model: str | None,
+) -> tuple[bool, str | None]:
+    try:
+        s = get_settings()
+        data_dir = s.sqlite_path.parent
+        sys_p = get_prompt("council_bootstrap_system", data_dir)
+        user_tpl = get_prompt("council_bootstrap_user_template", data_dir)
+        if not (sys_p or "").strip():
+            return False, "council_bootstrap_system prompt is empty"
+        roster = roster_json_for_prompt(cfg)
+        user_msg = format_council_bootstrap_user_template(
+            user_tpl,
+            council_id=council_id,
+            display_name=display_name,
+            notes=notes,
+            tags=tags,
+            area=area,
+            template_source=template_label,
+            roster_json=roster,
+        )
+        text = await complete_chat(
+            s,
+            [_msg_system(sys_p), _msg_user(user_msg)],
+            model=model,
+            temperature=0.25,
+        )
+        data = parse_bootstrap_llm_json(text)
+        apply_council_bootstrap_patch(cfg, data)
+        return True, None
+    except Exception as e:
+        log.warning("Council prompt autofill failed: %s", e)
+        return False, str(e)
+
+
 @app.post("/api/councils", response_model=None)
-async def create_council(body: CreateCouncilBody) -> dict[str, str]:
+async def create_council(body: CreateCouncilBody) -> dict[str, Any]:
     s = get_settings()
     new_id = body.id.strip()
     raw_from = (body.from_id or "default").strip()
@@ -232,16 +331,54 @@ async def create_council(body: CreateCouncilBody) -> dict[str, str]:
     try:
         if use_orchestrator_only:
             template = new_orchestrator_only_council()
+            template_label = "none_orchestrator_only"
         else:
             template = load_council(from_id, s.councils_dir, s.council_config_path)
+            template_label = from_id
     except FileNotFoundError as e:
         raise HTTPException(404, f"Template council not found: {from_id!r}") from e
+
+    dn = (body.display_name or "").strip() or None
+    notes_meta = (body.notes or "").strip() or None
+    area_meta = (body.area or "").strip() or None
+    template.display_name = dn
+    template.notes = notes_meta
+    template.tags = list(body.tags or [])
+    template.area = area_meta
+
+    autofill_applied = False
+    autofill_error: str | None = None
+    if body.autofill_prompts:
+        label_for_llm = dn or new_id
+        autofill_applied, autofill_error = await _autofill_new_council_prompts(
+            template,
+            council_id=new_id,
+            display_name=label_for_llm,
+            notes=notes_meta or "",
+            tags=list(body.tags or []),
+            area=area_meta or "",
+            template_label=template_label,
+            model=(body.model or "").strip() or None,
+        )
+
     try:
-        p = save_council(new_id, s.councils_dir, template)
+        p = save_council_with_backup(
+            new_id,
+            s.councils_dir,
+            s.council_config_path,
+            template,
+            s.sqlite_path.parent,
+            backup_label="Initial council file",
+        )
     except OSError as e:
         log.error("Could not create council file: %s", e)
         raise HTTPException(500, f"Could not create council: {e}") from e
-    return {"status": "ok", "id": new_id, "path": str(p)}
+    out: dict[str, Any] = {"status": "ok", "id": new_id, "path": str(p)}
+    if body.autofill_prompts:
+        out["autofill_applied"] = autofill_applied
+        if autofill_error:
+            out["autofill_error"] = autofill_error
+    return out
 
 
 @app.get("/api/councils/{council_id}", response_model=None)
@@ -260,11 +397,114 @@ async def put_council_by_id(
     if not validate_council_id(council_id.strip() or ""):
         raise HTTPException(400, "Invalid council_id")
     try:
-        p = save_council(council_id, s.councils_dir, body)
+        p = save_council_with_backup(
+            council_id.strip(),
+            s.councils_dir,
+            s.council_config_path,
+            body,
+            s.sqlite_path.parent,
+            backup_label="Before save (editor)",
+        )
     except OSError as e:
         log.error("Could not write council: %s", e)
         raise HTTPException(500, f"Could not save council: {e}") from e
     return {"status": "ok", "id": council_id, "path": str(p)}
+
+
+@app.get("/api/councils/{council_id}/versions", response_model=None)
+async def api_list_council_versions(council_id: str) -> dict[str, Any]:
+    if not validate_council_id(council_id.strip() or ""):
+        raise HTTPException(400, "Invalid council_id")
+    try:
+        rows = list_council_versions(get_settings().sqlite_path.parent, council_id.strip())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"versions": rows}
+
+
+@app.delete("/api/councils/{council_id}/versions/{version_id}", response_model=None)
+async def api_delete_council_version(council_id: str, version_id: str) -> dict[str, str]:
+    s = get_settings()
+    cid = council_id.strip()
+    vid = version_id.strip()
+    if not validate_council_id(cid):
+        raise HTTPException(400, "Invalid council_id")
+    if not validate_version_id(vid):
+        raise HTTPException(400, "Invalid version_id")
+    try:
+        delete_council_version(s.sqlite_path.parent, cid, vid)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"status": "ok", "id": cid, "version_id": vid}
+
+
+@app.post("/api/councils/{council_id}/versions/{version_id}/restore", response_model=None)
+async def api_restore_council_version(council_id: str, version_id: str) -> dict[str, str]:
+    s = get_settings()
+    cid = council_id.strip()
+    vid = version_id.strip()
+    if not validate_council_id(cid):
+        raise HTTPException(400, "Invalid council_id")
+    if not validate_version_id(vid):
+        raise HTTPException(400, "Invalid version_id")
+    try:
+        restored = load_council_version(s.sqlite_path.parent, cid, vid)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"Version not found: {vid!r}") from e
+    current = _require_council_for_id(cid)
+    add_council_version(
+        s.sqlite_path.parent,
+        cid,
+        current,
+        f"Before restore to {vid}",
+    )
+    try:
+        p = write_council_without_backup(cid, s.councils_dir, s.council_config_path, restored)
+    except OSError as e:
+        raise HTTPException(500, f"Could not restore council: {e}") from e
+    return {"status": "ok", "id": cid, "path": str(p), "restored_version": vid}
+
+
+@app.post("/api/councils/{council_id}/regenerate", response_model=None)
+async def api_regenerate_council_prompts(
+    council_id: str,
+    body: RegenerateCouncilBody = Body(default_factory=RegenerateCouncilBody),
+) -> dict[str, Any]:
+    s = get_settings()
+    cid = council_id.strip()
+    if not validate_council_id(cid):
+        raise HTTPException(400, "Invalid council_id")
+    cfg = _require_council_for_id(cid)
+    data_dir = s.sqlite_path.parent
+    add_council_version(data_dir, cid, cfg, "Before AI regenerate")
+    work = cfg.model_copy(deep=True)
+    dn = (work.display_name or "").strip() or cid
+    notes_m = (work.notes or "").strip() or ""
+    area_m = (work.area or "").strip() or ""
+    tags_m = list(work.tags or [])
+    autofill_applied, autofill_error = await _autofill_new_council_prompts(
+        work,
+        council_id=cid,
+        display_name=dn,
+        notes=notes_m,
+        tags=tags_m,
+        area=area_m,
+        template_label="regenerate_existing",
+        model=(body.model or "").strip() or None,
+    )
+    try:
+        p = write_council_without_backup(cid, s.councils_dir, s.council_config_path, work)
+    except OSError as e:
+        raise HTTPException(500, f"Could not save council: {e}") from e
+    out: dict[str, Any] = {
+        "status": "ok",
+        "id": cid,
+        "path": str(p),
+        "autofill_applied": autofill_applied,
+    }
+    if autofill_error:
+        out["autofill_error"] = autofill_error
+    return out
 
 
 @app.delete("/api/councils/{council_id}", response_model=None)
@@ -275,6 +515,7 @@ async def delete_council_by_id(council_id: str) -> dict[str, str]:
         raise HTTPException(400, "Invalid council_id")
     try:
         delete_council(council_id, s.councils_dir, s.council_config_path)
+        delete_all_versions_for_council(s.sqlite_path.parent, (council_id or "").strip())
     except ValueError as e:
         raise HTTPException(400, str(e) or "cannot delete") from e
     except FileNotFoundError as e:
@@ -297,7 +538,14 @@ async def put_council(body: CouncilConfigFile) -> dict[str, str]:
     """Backward compatible: same as PUT /api/councils/default."""
     s = get_settings()
     try:
-        p = save_council("default", s.councils_dir, body)
+        p = save_council_with_backup(
+            "default",
+            s.councils_dir,
+            s.council_config_path,
+            body,
+            s.sqlite_path.parent,
+            backup_label="Before save (editor)",
+        )
     except OSError as e:
         log.error("Could not write council config: %s", e)
         raise HTTPException(500, f"Could not save council config: {e}") from e

@@ -129,6 +129,26 @@ PIPELINE_PROMPT_META: list[PromptMeta] = [
         ),
     },
     {
+        "key": "council_bootstrap_system",
+        "category": "Council bootstrap",
+        "title": "New council — LLM system (prompt autofill)",
+        "description": (
+            "Used when creating a council with “Autofill prompts with LLM”. "
+            "Instructs the model to return one JSON object only (orchestrator, agents[], "
+            "orchestrator_user_instructions for routing guidelines)."
+        ),
+    },
+    {
+        "key": "council_bootstrap_user_template",
+        "category": "Council bootstrap",
+        "title": "New council — user message template",
+        "description": (
+            "Filled with {{COUNCIL_ID}}, {{DISPLAY_NAME}}, {{NOTES}}, {{TAGS}}, {{AREA}}, "
+            "{{TEMPLATE_SOURCE}}, {{ROSTER_JSON}}. Model returns orchestrator, agents[], and "
+            "orchestrator_user_instructions (routing guidelines for the user message)."
+        ),
+    },
+    {
         "key": "research_planner_system",
         "category": "Research",
         "title": "Research planner — system message",
@@ -211,7 +231,67 @@ def _defaults() -> dict[str, str]:
         "refine_prompt_system": REFINE_PROMPT_SYSTEM.strip(),
         "refine_prompt_user_template": REFINE_PROMPT_USER_TEMPLATE.strip(),
         "refine_prompt_default_instruction": REFINE_PROMPT_DEFAULT_INSTRUCTION.strip(),
+        "council_bootstrap_system": (
+            "You help author multi-agent council configuration. Reply with a single JSON object only "
+            "(no prose before or after). If you use a markdown fence, the fenced content must be raw JSON. "
+            "Keys use ASCII; specialist ids must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,63}. "
+            "Do not put the orchestrator id inside agents[]—use the top-level orchestrator object for routing. "
+            "Include orchestrator_user_instructions: practical routing guidelines injected into each orchestrator "
+            "user turn (when to call which specialist id, research, ask_user, etc.)."
+        ),
+        "council_bootstrap_user_template": _default_council_bootstrap_user_template(),
     }
+
+
+def _default_council_bootstrap_user_template() -> str:
+    return (
+        "You are drafting system prompts for a multi-agent council (orchestrator routes; specialists answer).\n\n"
+        "Context:\n"
+        "- Council file id: {{COUNCIL_ID}}\n"
+        "- Display name: {{DISPLAY_NAME}}\n"
+        "- Area / domain: {{AREA}}\n"
+        "- Tags: {{TAGS}}\n"
+        "- Notes: {{NOTES}}\n"
+        "- Template copied from: {{TEMPLATE_SOURCE}}\n\n"
+        "Current roster (JSON). Each specialist has a stable id used in call_agents. "
+        "You may refresh prompts for existing ids and add **new** specialists with new ids when the mission "
+        "needs more roles. New ids: lowercase snake_case or similar (letters, digits, underscore, hyphen; "
+        "1–64 chars; start with letter or digit). Do not duplicate the orchestrator id in agents[].\n\n"
+        "ROSTER:\n"
+        "{{ROSTER_JSON}}\n\n"
+        "Return **only** one JSON object with this shape:\n"
+        "{\n"
+        '  "orchestrator_user_instructions": "required: routing guidelines for the orchestrator user message '
+        "(when to use call_agents with which ids, run_research, ask_user, orchestrator_reply, etc.). "
+        'List every specialist id you include in agents[] and how to combine them.",\n'
+        '  "orchestrator": {\n'
+        '    "system_prompt": "optional full orchestrator system prompt",\n'
+        '    "name": "optional",\n'
+        '    "title": "optional",\n'
+        '    "tools_enabled": false\n'
+        "  },\n"
+        '  "agents": [\n'
+        "    {\n"
+        '      "id": "existing_or_new_specialist_id",\n'
+        '      "system_prompt": "required non-empty specialist system prompt",\n'
+        '      "name": "optional display name",\n'
+        '      "title": "optional short mandate line",\n'
+        '      "tools_enabled": true\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- **orchestrator_user_instructions** must be substantive prose (not empty). Align it with the final "
+        "specialist roster you output: mention each specialist id by name and typical call patterns, plus any "
+        "mission-specific priorities from display name / area / notes / tags.\n"
+        "- If ROSTER lists specialists, include one agents[] entry per listed specialist id with tailored "
+        "system_prompt (you may refine name/title).\n"
+        "- If ROSTER has **no** specialists (orchestrator only), propose 2–5 agents[] entries with new ids and "
+        "cohesive roles aligned with display name, area, notes, and tags.\n"
+        "- Differentiate roles: each specialist should have a clear, non-overlapping mandate.\n"
+        "- Orchestrator system_prompt should stress JSON routing discipline and how to invoke the specialist ids.\n"
+        "- Prefer concise, operational prompts; scale wording if the domain requires depth.\n"
+    )
 
 
 def overrides_path(data_dir: Path) -> Path:
@@ -278,6 +358,35 @@ def format_refine_prompt_user_template(
         template.replace("{{LABEL}}", label)
         .replace("{{CURRENT_PROMPT}}", current_prompt)
         .replace("{{INSTRUCTION}}", instruction)
+    )
+
+
+def format_council_bootstrap_user_template(
+    template: str,
+    *,
+    council_id: str,
+    display_name: str,
+    notes: str,
+    tags: list[str],
+    area: str,
+    template_source: str,
+    roster_json: str,
+) -> str:
+    """Substitute placeholders in council_bootstrap_user_template."""
+
+    def nz(s: str | None) -> str:
+        t = (s or "").strip()
+        return t if t else "(none)"
+
+    tags_s = ", ".join(tags) if tags else "(none)"
+    return (
+        template.replace("{{COUNCIL_ID}}", nz(council_id))
+        .replace("{{DISPLAY_NAME}}", nz(display_name))
+        .replace("{{NOTES}}", nz(notes))
+        .replace("{{TAGS}}", tags_s)
+        .replace("{{AREA}}", nz(area))
+        .replace("{{TEMPLATE_SOURCE}}", nz(template_source))
+        .replace("{{ROSTER_JSON}}", roster_json)
     )
 
 

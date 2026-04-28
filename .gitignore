@@ -15,6 +15,7 @@ data/planner.db
 data/*.db
 data/preferences.json
 data/prompt_overrides.json
+data/council_versions/
 
 # Node
 frontend/node_modules/

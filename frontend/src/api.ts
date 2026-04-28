@@ -170,6 +170,14 @@ export type CouncilConfig = {
   output_instructions?: string | null
   /** Download filename hint for report or code. */
   artifact_filename?: string | null
+  /** Human-readable council title (optional; file id remains the council id). */
+  display_name?: string | null
+  /** Free-form notes for humans and LLM bootstrap context. */
+  notes?: string | null
+  /** Short labels for organization / prompts. */
+  tags?: string[]
+  /** Domain or mission focus. */
+  area?: string | null
 }
 
 export async function listCouncils(): Promise<string[]> {
@@ -179,25 +187,64 @@ export async function listCouncils(): Promise<string[]> {
   return j.councils ?? []
 }
 
+export type CreateCouncilPayload = {
+  id: string
+  from_id: string
+  display_name?: string | null
+  notes?: string | null
+  tags?: string[]
+  area?: string | null
+  autofill_prompts?: boolean
+  model?: string | null
+}
+
+export type CreateCouncilResponse = {
+  status: string
+  id: string
+  path: string
+  autofill_applied?: boolean
+  autofill_error?: string
+}
+
 export async function createCouncil(
-  newId: string,
-  fromId: string = 'default'
-): Promise<{ status: string; id: string; path: string }> {
+  payload: CreateCouncilPayload
+): Promise<CreateCouncilResponse> {
   const noneTemplate =
-    fromId === 'none' || fromId === '' || fromId === '__none__'
+    payload.from_id === 'none' ||
+    payload.from_id === '' ||
+    payload.from_id === '__none__'
+  const body: Record<string, unknown> = {
+    id: payload.id.trim(),
+    from_id: noneTemplate ? 'none' : payload.from_id,
+  }
+  if (payload.display_name != null && payload.display_name.trim()) {
+    body.display_name = payload.display_name.trim()
+  }
+  if (payload.notes != null && payload.notes.trim()) {
+    body.notes = payload.notes.trim()
+  }
+  if (payload.tags?.length) {
+    body.tags = payload.tags
+  }
+  if (payload.area != null && payload.area.trim()) {
+    body.area = payload.area.trim()
+  }
+  if (payload.autofill_prompts) {
+    body.autofill_prompts = true
+    if (payload.model?.trim()) {
+      body.model = payload.model.trim()
+    }
+  }
   const r = await fetch(`${API}/councils`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id: newId.trim(),
-      from_id: noneTemplate ? 'none' : fromId,
-    }),
+    body: JSON.stringify(body),
   })
   if (!r.ok) {
     const t = await r.text()
     throw new Error(t || `create council: ${r.status}`)
   }
-  return r.json()
+  return r.json() as Promise<CreateCouncilResponse>
 }
 
 export async function deleteCouncil(
@@ -238,6 +285,87 @@ export async function putCouncil(
     throw new Error(t || `council save: ${r.status}`)
   }
   return r.json()
+}
+
+export type CouncilVersionRow = {
+  id: string
+  label: string
+  created_at: number
+}
+
+export async function listCouncilVersions(
+  councilId: string
+): Promise<CouncilVersionRow[]> {
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}/versions`
+  )
+  if (!r.ok) throw new Error(`council versions: ${r.status}`)
+  const j = (await r.json()) as { versions?: CouncilVersionRow[] }
+  return j.versions ?? []
+}
+
+export async function deleteCouncilVersion(
+  councilId: string,
+  versionId: string
+): Promise<{ status: string; id: string; version_id: string }> {
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}/versions/${encodeURIComponent(versionId)}`,
+    { method: 'DELETE' }
+  )
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `delete version: ${r.status}`)
+  }
+  return r.json() as Promise<{ status: string; id: string; version_id: string }>
+}
+
+export async function restoreCouncilVersion(
+  councilId: string,
+  versionId: string
+): Promise<{ status: string; id: string; path: string; restored_version: string }> {
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}/versions/${encodeURIComponent(versionId)}/restore`,
+    { method: 'POST' }
+  )
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `restore version: ${r.status}`)
+  }
+  return r.json() as Promise<{
+    status: string
+    id: string
+    path: string
+    restored_version: string
+  }>
+}
+
+export type RegenerateCouncilResponse = {
+  status: string
+  id: string
+  path: string
+  autofill_applied: boolean
+  autofill_error?: string
+}
+
+export async function regenerateCouncilPrompts(
+  councilId: string,
+  model?: string | null
+): Promise<RegenerateCouncilResponse> {
+  const body: Record<string, unknown> = {}
+  if (model?.trim()) body.model = model.trim()
+  const r = await fetch(
+    `${API}/councils/${encodeURIComponent(councilId)}/regenerate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  )
+  if (!r.ok) {
+    const t = await r.text()
+    throw new Error(t || `regenerate council: ${r.status}`)
+  }
+  return r.json() as Promise<RegenerateCouncilResponse>
 }
 
 export async function getHealth(): Promise<HealthResponse> {

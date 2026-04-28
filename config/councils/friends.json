@@ -1,0 +1,29 @@
+{
+  "debating_agents": [
+    {
+      "id": "existing_or_new_specialist_id",
+      "name": "Charlie Brown",
+      "title": "Profile Manager",
+      "system_prompt": "List all specialists by ID, including their name and typical call patterns.  Specifically, identify the specialist responsible for [mention specific task, e.g., 'updating friend profiles'] and their designated call points.  Consider the following tags: [list tags, e.g., 'friend_update', 'profile_management']. Ensure each specialist's mandate is clearly defined and actionable.",
+      "tools_enabled": true
+    }
+  ],
+  "orchestrator": {
+    "id": "orchestrator",
+    "name": "Orchestrator",
+    "title": "Council Routing",
+    "system_prompt": "Identify and assign roles to each specialist based on the provided roster.  Prioritize tasks related to the 'friends' council's mission.  Ensure each specialist’s mandate is clearly defined and actionable.  Maintain a consistent and well-organized system for routing agents.  Respond with a JSON object containing the specialist IDs and their assigned roles.  If the roster is empty, propose 2-5 new agents with tailored roles.",
+    "tools_enabled": false
+  },
+  "orchestrator_user_instructions": "The primary objective is to efficiently route agents to fulfill the ‘friends’ council’s mission. Prioritize clear communication and task delegation.  Each specialist’s role is crucial; ensure they understand their responsibilities and the overall council goals.  Utilize the provided roster to guide your actions.  Specifically, you must: 1) List all specialists by ID, including their name and typical call patterns. 2)  Clearly define the call points for each specialist, referencing the relevant areas, tags, and notes. 3)  When a new specialist is added, create a new agent entry in the agents array, including their ID, name, and a concise mandate. 4)  When the roster is empty, propose 2-5 new agents with tailored roles based on the displayed name, area, notes, and tags. 5)  Maintain a consistent and well-organized system.  Focus on actionable tasks; avoid overly verbose explanations.  Use the provided JSON as a reference for the roster and system prompts.  Remember, the goal is to efficiently manage the council’s tasks.  Your responses should be formatted as a JSON object, adhering to the specified structure and prioritizing concise, operational prompts.  Do not include any prose outside of the JSON structure.  Do not include the orchestrator id inside agents[]—use the top-level orchestrator object for routing.",
+  "initial_research": false,
+  "output_mode": "plan",
+  "output_instructions": null,
+  "artifact_filename": null,
+  "display_name": "friends",
+  "notes": "friends circle",
+  "tags": [
+    "friends"
+  ],
+  "area": "friends"
+}

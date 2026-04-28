@@ -17,6 +17,9 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
     ['plan', 'report', 'code', 'conversation', 'none'].includes(c.output_mode)
       ? c.output_mode
       : 'plan'
+  const tags = Array.isArray(c.tags)
+    ? c.tags.map((t) => (typeof t === 'string' ? t.trim() : '')).filter(Boolean).slice(0, 48)
+    : []
   return {
     ...c,
     initial_research: c.initial_research !== false,
@@ -25,6 +28,10 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
     output_mode: om,
     output_instructions: c.output_instructions ?? '',
     artifact_filename: c.artifact_filename ?? '',
+    display_name: c.display_name ?? '',
+    notes: c.notes ?? '',
+    tags,
+    area: c.area ?? '',
   }
 }
 
@@ -120,6 +127,33 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     artifact_filename = o.artifact_filename
   }
 
+  let display_name: string | undefined
+  if (typeof o.display_name === 'string') {
+    display_name = o.display_name
+  }
+
+  let notes: string | undefined
+  if (typeof o.notes === 'string') {
+    notes = o.notes
+  }
+
+  let tags: string[] | undefined
+  if (Array.isArray(o.tags)) {
+    const tgs: string[] = []
+    for (const x of o.tags) {
+      if (typeof x !== 'string') continue
+      const s = x.trim()
+      if (s) tgs.push(s.slice(0, 80))
+      if (tgs.length >= 48) break
+    }
+    tags = tgs
+  }
+
+  let area: string | undefined
+  if (typeof o.area === 'string') {
+    area = o.area
+  }
+
   return {
     debating_agents: debaters,
     ...(orchestrator ? { orchestrator } : {}),
@@ -130,6 +164,10 @@ export function parseCouncilConfigJson(data: unknown): CouncilConfig | null {
     ...(output_mode !== undefined ? { output_mode } : {}),
     ...(output_instructions !== undefined ? { output_instructions } : {}),
     ...(artifact_filename !== undefined ? { artifact_filename } : {}),
+    ...(display_name !== undefined ? { display_name } : {}),
+    ...(notes !== undefined ? { notes } : {}),
+    ...(tags !== undefined ? { tags } : {}),
+    ...(area !== undefined ? { area } : {}),
   }
 }
 
@@ -159,6 +197,18 @@ export function councilConfigToJsonString(c: CouncilConfig): string {
   }
   if (c.artifact_filename?.trim()) {
     o.artifact_filename = c.artifact_filename.trim()
+  }
+  if (c.display_name?.trim()) {
+    o.display_name = c.display_name.trim()
+  }
+  if (c.notes?.trim()) {
+    o.notes = c.notes.trim()
+  }
+  if (c.tags?.length) {
+    o.tags = c.tags
+  }
+  if (c.area?.trim()) {
+    o.area = c.area.trim()
   }
   o.debating_agents = c.debating_agents
   return JSON.stringify(o, null, 2)

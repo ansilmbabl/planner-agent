@@ -12,13 +12,12 @@
   "output_mode": "plan",
   "output_instructions": null,
   "artifact_filename": null,
-  "display_name": "english club",
-  "notes": "helps to make the user's english language better by chatting and giving feedbacks, maintain a friendly chat",
+  "display_name": "friend circle",
+  "notes": "friendly chat between a group of people",
   "tags": [
-    "teacher",
-    "assistant",
-    "language leanring helper",
-    "grammar assitant"
+    "friends",
+    "chat",
+    "time pass"
   ],
-  "area": "language learning"
+  "area": "friends"
 }

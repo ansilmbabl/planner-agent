@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentDef(BaseModel):
@@ -84,6 +84,41 @@ class CouncilConfigFile(BaseModel):
         default=None,
         description="Suggested download name for report or code (e.g. report.md, main.py).",
     )
+    display_name: str | None = Field(
+        default=None,
+        description="Human-readable name for UI and LLM bootstrap (file id is still the council id).",
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Free-form notes; surfaced in settings and passed to council bootstrap prompts.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Short labels for organization or prompt context (e.g. compliance, codegen).",
+    )
+    area: str | None = Field(
+        default=None,
+        description="Primary domain or mission (e.g. incident response, hiring).",
+    )
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for x in v:
+            if not isinstance(x, str):
+                continue
+            s = x.strip()
+            if not s:
+                continue
+            out.append(s[:80])
+            if len(out) >= 48:
+                break
+        return out
 
 
 def load_council_config(path: Path) -> CouncilConfigFile:

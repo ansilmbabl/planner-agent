@@ -12,15 +12,20 @@ import { createPortal } from 'react-dom'
 import {
   createCouncil,
   deleteCouncil,
+  deleteCouncilVersion,
   getBuiltinPrompts,
   getCouncil,
+  listCouncilVersions,
   listCouncils,
   putBuiltinPrompt,
   putCouncil,
+  regenerateCouncilPrompts,
   resetBuiltinPrompts,
+  restoreCouncilVersion,
   type AgentDef,
   type BuiltinPromptItem,
   type CouncilConfig,
+  type CouncilVersionRow,
   type OutputMode,
 } from '../api'
 import {
@@ -36,6 +41,7 @@ import { PromptRefineWidget } from './PromptRefineWidget'
 /** Sidebar / category order for Pipeline defaults (unknown categories sort last). */
 const PIPELINE_CATEGORY_ORDER: string[] = [
   'Orchestrator',
+  'Council bootstrap',
   'Specialists',
   'Research',
   'Plan writer',
@@ -53,6 +59,22 @@ function sortPipelineCategories(a: string, b: string): number {
   if (sa !== sb) return sa - sb
   return a.localeCompare(b)
 }
+
+/** Staged UX while POST /councils runs (LLM autofill has no granular server events). */
+const CREATE_MODAL_PROGRESS_AUTOFILL: string[] = [
+  'Contacting server…',
+  'Copying template and saving metadata…',
+  'Model is drafting orchestrator, specialists, and routing guidelines — this is usually the slow step…',
+  'Still running — local models often need 30 seconds to a few minutes…',
+  'Almost done — finalizing on the server…',
+]
+
+const REGENERATE_COUNCIL_PROGRESS: string[] = [
+  'Snapshotting current council…',
+  'Calling model to refresh prompts from profile and roster…',
+  'Still running — same kind of work as new-council autofill…',
+  'Applying merged prompts and saving…',
+]
 
 type Selection = { kind: 'debate'; index: number }
 
@@ -832,15 +854,55 @@ export function AgentsTab({
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [createDisplayName, setCreateDisplayName] = useState('')
+  const [createNotes, setCreateNotes] = useState('')
+  const [createTagsLine, setCreateTagsLine] = useState('')
+  const [createArea, setCreateArea] = useState('')
+  const [createAutofillPrompts, setCreateAutofillPrompts] = useState(false)
+  const [createAutofillModel, setCreateAutofillModel] = useState('')
+  const [createProgressMessage, setCreateProgressMessage] = useState('')
+  const [councilVersions, setCouncilVersions] = useState<CouncilVersionRow[]>([])
+  const [versionsLoading, setVersionsLoading] = useState(false)
+  const [versionsActionError, setVersionsActionError] = useState<string | null>(null)
+  const [regeneratingCouncil, setRegeneratingCouncil] = useState(false)
+  const [regenerateProgressMessage, setRegenerateProgressMessage] = useState('')
+  const [regenerateModelPick, setRegenerateModelPick] = useState('')
   const [councilAgentPromptSearch, setCouncilAgentPromptSearch] = useState('')
   const [expandedCouncilAgentIds, setExpandedCouncilAgentIds] = useState<Set<string>>(
     () => new Set(),
   )
   const fileImportRef = useRef<HTMLInputElement>(null)
+  const createProgressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const regenerateProgressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const configRef = useRef<CouncilConfig | null>(null)
   useEffect(() => {
     configRef.current = config
   }, [config])
+
+  const stopCreateProgressTicker = useCallback(() => {
+    if (createProgressIntervalRef.current != null) {
+      clearInterval(createProgressIntervalRef.current)
+      createProgressIntervalRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => stopCreateProgressTicker(), [stopCreateProgressTicker])
+
+  const stopRegenerateProgressTicker = useCallback(() => {
+    if (regenerateProgressIntervalRef.current != null) {
+      clearInterval(regenerateProgressIntervalRef.current)
+      regenerateProgressIntervalRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => stopRegenerateProgressTicker(), [stopRegenerateProgressTicker])
+
+  useEffect(() => {
+    if (!createOpen) {
+      stopCreateProgressTicker()
+      setCreateProgressMessage('')
+    }
+  }, [createOpen, stopCreateProgressTicker])
 
   useEffect(() => {
     setCouncilAgentPromptSearch('')
@@ -984,12 +1046,43 @@ export function AgentsTab({
       }
     }
     setCreateError(null)
+    stopCreateProgressTicker()
+    setCreateProgressMessage('')
     setCreating(true)
+    if (createAutofillPrompts) {
+      let step = 0
+      setCreateProgressMessage(CREATE_MODAL_PROGRESS_AUTOFILL[0])
+      createProgressIntervalRef.current = window.setInterval(() => {
+        step = Math.min(step + 1, CREATE_MODAL_PROGRESS_AUTOFILL.length - 1)
+        setCreateProgressMessage(CREATE_MODAL_PROGRESS_AUTOFILL[step])
+      }, 2600)
+    } else {
+      setCreateProgressMessage('Creating council on the server…')
+    }
     try {
-      await createCouncil(id, templateNone ? 'none' : createFromId)
+      const res = await createCouncil({
+        id,
+        from_id: templateNone ? 'none' : createFromId,
+        display_name: createDisplayName.trim() || null,
+        notes: createNotes.trim() || null,
+        tags: createTagsLine
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean)
+          .slice(0, 48),
+        area: createArea.trim() || null,
+        autofill_prompts: createAutofillPrompts,
+        model:
+          createAutofillPrompts
+            ? createAutofillModel.trim() || refineModel.trim() || null
+            : null,
+      })
+      stopCreateProgressTicker()
+      setCreateProgressMessage('Refreshing council list…')
       const fresh = await listCouncils()
       if (fresh.length) setCouncilIds(fresh)
       setCouncilId(id)
+      setCreateProgressMessage('Loading council into the editor…')
       const c = await getCouncil(id)
       setConfigFromServer(c)
       setLoadError(null)
@@ -997,13 +1090,26 @@ export function AgentsTab({
       setSaved(false)
       setCreateOpen(false)
       setNewCouncilName('')
+      setCreateDisplayName('')
+      setCreateNotes('')
+      setCreateTagsLine('')
+      setCreateArea('')
+      setCreateAutofillPrompts(false)
+      setCreateAutofillModel('')
       setDeleteError(null)
+      if (res.autofill_error) {
+        window.alert(
+          `Council was created, but LLM prompt autofill did not complete:\n\n${res.autofill_error}`
+        )
+      }
     } catch (e) {
       setCreateError(
         e instanceof Error ? e.message : 'Failed to create council'
       )
     } finally {
+      stopCreateProgressTicker()
       setCreating(false)
+      setCreateProgressMessage('')
     }
   }, [
     newCouncilName,
@@ -1011,6 +1117,14 @@ export function AgentsTab({
     config,
     baselineSig,
     setConfigFromServer,
+    createDisplayName,
+    createNotes,
+    createTagsLine,
+    createArea,
+    createAutofillPrompts,
+    createAutofillModel,
+    refineModel,
+    stopCreateProgressTicker,
   ])
 
   const onDeleteCurrentCouncil = useCallback(async () => {
@@ -1102,6 +1216,27 @@ export function AgentsTab({
     if (!config || baselineSig == null) return false
     return configSignature(config) !== baselineSig
   }, [config, baselineSig])
+
+  const loadCouncilVersions = useCallback(async () => {
+    setVersionsActionError(null)
+    setVersionsLoading(true)
+    try {
+      const rows = await listCouncilVersions(councilId)
+      setCouncilVersions(rows)
+    } catch (e) {
+      setVersionsActionError(
+        e instanceof Error ? e.message : 'Could not load version history'
+      )
+      setCouncilVersions([])
+    } finally {
+      setVersionsLoading(false)
+    }
+  }, [councilId])
+
+  useEffect(() => {
+    if (mode !== 'agents' && mode !== 'prompts_council') return
+    void loadCouncilVersions()
+  }, [councilId, mode, loadCouncilVersions])
 
   const updateDebater = useCallback((index: number, patch: Partial<AgentDef>) => {
     setConfig((c) => {
@@ -1237,6 +1372,10 @@ export function AgentsTab({
         output_instructions:
           normalized.output_instructions?.trim() || undefined,
         artifact_filename: normalized.artifact_filename?.trim() || undefined,
+        display_name: normalized.display_name?.trim() || undefined,
+        notes: normalized.notes?.trim() || undefined,
+        tags: normalized.tags,
+        area: normalized.area?.trim() || undefined,
         ...(normalized.initial_research === false
           ? { initial_research: false }
           : {}),
@@ -1245,12 +1384,122 @@ export function AgentsTab({
       setConfig(mergeCouncilDefaults(toSave))
       setBaselineSig(configSignature(toSave))
       setSaved(true)
+      void loadCouncilVersions()
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed')
     } finally {
       setSaving(false)
     }
-  }, [config, councilId])
+  }, [config, councilId, loadCouncilVersions])
+
+  const onRegenerateCouncilPrompts = useCallback(async () => {
+    if (dirty) {
+      window.alert(
+        'Save the council first. Regenerate reads the file on the server, not unsaved editor changes.'
+      )
+      return
+    }
+    if (
+      !window.confirm(
+        'Snapshot the current saved council, then rerun AI on your profile and roster? This replaces orchestrator, specialist, and routing-guidelines text in the file. You can restore from version history.'
+      )
+    ) {
+      return
+    }
+    setVersionsActionError(null)
+    stopRegenerateProgressTicker()
+    setRegenerateProgressMessage('')
+    setRegeneratingCouncil(true)
+    let step = 0
+    setRegenerateProgressMessage(REGENERATE_COUNCIL_PROGRESS[0])
+    regenerateProgressIntervalRef.current = window.setInterval(() => {
+      step = Math.min(step + 1, REGENERATE_COUNCIL_PROGRESS.length - 1)
+      setRegenerateProgressMessage(REGENERATE_COUNCIL_PROGRESS[step])
+    }, 2800)
+    try {
+      const res = await regenerateCouncilPrompts(
+        councilId,
+        regenerateModelPick.trim() || refineModel.trim() || null
+      )
+      stopRegenerateProgressTicker()
+      setRegenerateProgressMessage('Loading updated council…')
+      const c = await getCouncil(councilId)
+      setConfigFromServer(c)
+      setSaveError(null)
+      setSaved(false)
+      await loadCouncilVersions()
+      if (res.autofill_error) {
+        window.alert(
+          `Regenerate finished with issues:\n\n${res.autofill_error}\n\nCheck prompts manually or restore a snapshot.`
+        )
+      }
+    } catch (e) {
+      setVersionsActionError(e instanceof Error ? e.message : 'Regenerate failed')
+    } finally {
+      stopRegenerateProgressTicker()
+      setRegeneratingCouncil(false)
+      setRegenerateProgressMessage('')
+    }
+  }, [
+    dirty,
+    councilId,
+    regenerateModelPick,
+    refineModel,
+    setConfigFromServer,
+    loadCouncilVersions,
+    stopRegenerateProgressTicker,
+  ])
+
+  const onRestoreCouncilVersion = useCallback(
+    async (versionId: string) => {
+      if (dirty) {
+        window.alert(
+          'Save or discard local edits first — restore updates from the server and replaces your editor buffer.'
+        )
+        return
+      }
+      if (
+        !window.confirm(
+          'Restore this snapshot? The live file will be snapshotted first, then replaced.'
+        )
+      ) {
+        return
+      }
+      setVersionsActionError(null)
+      try {
+        await restoreCouncilVersion(councilId, versionId)
+        const c = await getCouncil(councilId)
+        setConfigFromServer(c)
+        setSaveError(null)
+        setSaved(false)
+        await loadCouncilVersions()
+      } catch (e) {
+        setVersionsActionError(e instanceof Error ? e.message : 'Restore failed')
+      }
+    },
+    [
+      dirty,
+      councilId,
+      setConfigFromServer,
+      loadCouncilVersions,
+    ]
+  )
+
+  const onDeleteCouncilVersion = useCallback(
+    async (versionId: string) => {
+      if (!window.confirm('Delete this snapshot from history? The live council file is unchanged.')) {
+        return
+      }
+      setVersionsActionError(null)
+      try {
+        await deleteCouncilVersion(councilId, versionId)
+        await loadCouncilVersions()
+      } catch (e) {
+        setVersionsActionError(e instanceof Error ? e.message : 'Delete snapshot failed')
+      }
+    },
+    [councilId, loadCouncilVersions]
+  )
 
   const exportJson = useCallback(() => {
     if (!config) return
@@ -1308,6 +1557,8 @@ export function AgentsTab({
       if (e.key === 'Escape' && createOpen) {
         e.preventDefault()
         e.stopPropagation()
+        if (creating) return
+        stopCreateProgressTicker()
         setCreateOpen(false)
         return
       }
@@ -1336,7 +1587,7 @@ export function AgentsTab({
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onNavAgent, editorOpen, createOpen, mode])
+  }, [onNavAgent, editorOpen, createOpen, creating, mode, stopCreateProgressTicker])
 
   useEffect(() => {
     if (!editorOpen && !createOpen) return
@@ -1459,6 +1710,12 @@ export function AgentsTab({
             setCreateError(null)
             setDeleteError(null)
             setNewCouncilName('')
+            setCreateDisplayName('')
+            setCreateNotes('')
+            setCreateTagsLine('')
+            setCreateArea('')
+            setCreateAutofillPrompts(false)
+            setCreateAutofillModel(refineModel)
             setCreateFromId(councilId)
             setCreateOpen(true)
           }}
@@ -1527,6 +1784,198 @@ export function AgentsTab({
           />
         </div>
       </div>
+      )}
+
+      {showCouncilToolbar && config && (
+        <details
+          className="rounded-2xl border border-slate-600/30 bg-slate-900/25 max-w-5xl open:bg-slate-900/35"
+          open
+        >
+          <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200 marker:text-slate-600">
+            <span className="text-slate-200 font-medium">Council profile</span>
+            <span className="text-slate-500">
+              {' '}
+              — display name, notes, tags, domain (saved in council JSON; used for LLM autofill context)
+            </span>
+          </summary>
+          <div className="px-4 pb-4 sm:px-5 border-t border-white/[0.06] pt-4 space-y-3 max-w-3xl">
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Edit the blueprint for this council. When you create a council with autofill, these fields are sent to
+              the prompts under <span className="text-cyan-200/80">Pipeline defaults</span> →{' '}
+              <span className="text-slate-400">Council bootstrap</span>.
+            </p>
+            <label className="block text-xs text-slate-400">
+              Display name
+              <input
+                type="text"
+                className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/40"
+                value={config.display_name ?? ''}
+                onChange={(e) =>
+                  setConfig((c) => (c ? { ...c, display_name: e.target.value } : c))
+                }
+                placeholder="e.g. Security review council"
+                autoComplete="off"
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Area / domain
+              <input
+                type="text"
+                className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/40"
+                value={config.area ?? ''}
+                onChange={(e) => setConfig((c) => (c ? { ...c, area: e.target.value } : c))}
+                placeholder="e.g. AppSec, hiring, product strategy"
+                autoComplete="off"
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Tags <span className="text-slate-600">(comma-separated)</span>
+              <input
+                type="text"
+                className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/40"
+                value={(config.tags ?? []).join(', ')}
+                onChange={(e) => {
+                  const tags = e.target.value
+                    .split(',')
+                    .map((t) => t.trim())
+                    .filter(Boolean)
+                    .slice(0, 48)
+                  setConfig((c) => (c ? { ...c, tags } : c))
+                }}
+                placeholder="research, compliance, codegen"
+                autoComplete="off"
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Notes
+              <textarea
+                className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/40 min-h-[5rem]"
+                value={config.notes ?? ''}
+                onChange={(e) => setConfig((c) => (c ? { ...c, notes: e.target.value } : c))}
+                placeholder="Mission, constraints, links, or anything future agents should respect."
+                spellCheck={true}
+              />
+            </label>
+
+            <div className="pt-4 mt-3 border-t border-white/[0.08] space-y-4 max-w-3xl">
+              <div>
+                <h4 className="text-xs font-semibold text-slate-300">Regenerate prompts (AI)</h4>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  Reruns <span className="text-slate-400">Council bootstrap</span> on the{' '}
+                  <strong className="text-slate-400">saved</strong> file, using your profile fields and current roster.
+                  Snapshots are stored under <code className="text-slate-600">data/council_versions/</code> (see
+                  below).
+                </p>
+                <label className="block text-xs text-slate-400 mt-2">
+                  Model
+                  <select
+                    className="mt-1 w-full max-w-md text-sm py-2 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100"
+                    value={regenerateModelPick || refineModel || ''}
+                    onChange={(e) => setRegenerateModelPick(e.target.value)}
+                    disabled={regeneratingCouncil || saving}
+                  >
+                    {(() => {
+                      const opts =
+                        refineModels.length > 0
+                          ? refineModels
+                          : refineModel
+                            ? [refineModel]
+                            : []
+                      if (opts.length === 0) {
+                        return <option value="">Provider default</option>
+                      }
+                      return opts.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))
+                    })()}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void onRegenerateCouncilPrompts()}
+                  disabled={regeneratingCouncil || saving}
+                  className="mt-2 text-xs font-medium rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-40"
+                >
+                  {regeneratingCouncil ? 'Regenerating…' : 'Regenerate with AI'}
+                </button>
+                {regeneratingCouncil && regenerateProgressMessage ? (
+                  <div
+                    className="mt-3 space-y-2 rounded-xl border border-cyan-500/25 bg-cyan-950/20 px-3 py-3"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span
+                        className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin"
+                        aria-hidden
+                      />
+                      <p className="text-xs text-cyan-100/95 leading-relaxed">{regenerateProgressMessage}</p>
+                    </div>
+                    <div className="council-create-progress-track" aria-hidden>
+                      <div className="council-create-progress-fill" />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div>
+                <h4 className="text-xs font-semibold text-slate-300">Version history</h4>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  Automatic snapshots before each save or AI regenerate. Restore rolls back the live file (current
+                  state is snapshotted first). Delete removes only the snapshot file.
+                </p>
+                {versionsActionError ? (
+                  <p className="mt-2 text-xs text-amber-200/95">{versionsActionError}</p>
+                ) : null}
+                {versionsLoading ? (
+                  <p className="mt-2 text-xs text-slate-500">Loading snapshots…</p>
+                ) : councilVersions.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-600">No snapshots yet — save or regenerate to create one.</p>
+                ) : (
+                  <ul className="mt-2 space-y-2 max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-slate-950/40 p-2">
+                    {councilVersions.map((v) => (
+                      <li
+                        key={v.id}
+                        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-md px-2 py-2 text-xs border border-transparent hover:border-white/[0.06]"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-slate-200 font-medium truncate">{v.label}</div>
+                          <div className="text-[10px] text-slate-600 font-mono truncate mt-0.5">{v.id}</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">
+                            {new Date(v.created_at * 1000).toLocaleString(undefined, {
+                              dateStyle: 'medium',
+                              timeStyle: 'short',
+                            })}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => void onRestoreCouncilVersion(v.id)}
+                            disabled={regeneratingCouncil || saving || versionsLoading}
+                            className="rounded-md border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-violet-200 hover:bg-violet-500/20 disabled:opacity-40"
+                          >
+                            Restore
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteCouncilVersion(v.id)}
+                            disabled={regeneratingCouncil || saving || versionsLoading}
+                            className="rounded-md border border-slate-600/50 px-2 py-1 text-slate-400 hover:bg-white/[0.05] disabled:opacity-40"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </details>
       )}
 
       {showCouncilToolbar && config && (
@@ -2004,15 +2453,21 @@ export function AgentsTab({
               role="dialog"
               aria-modal="true"
               aria-labelledby="council-new-title"
+              aria-busy={creating}
             >
               <button
                 type="button"
-                className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+                className="absolute inset-0 bg-black/70 backdrop-blur-sm disabled:cursor-wait"
                 aria-label="Close"
-                onClick={() => setCreateOpen(false)}
+                disabled={creating}
+                onClick={() => {
+                  if (creating) return
+                  stopCreateProgressTicker()
+                  setCreateOpen(false)
+                }}
               />
               <div
-                className="relative z-10 w-full max-w-md rounded-t-2xl border border-white/10 bg-[#0c0e16] p-4 shadow-2xl sm:rounded-2xl sm:mt-0"
+                className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-t-2xl border border-white/10 bg-[#0c0e16] p-4 shadow-2xl sm:rounded-2xl sm:mt-0"
                 onClick={(e) => e.stopPropagation()}
               >
                 <h2
@@ -2024,7 +2479,8 @@ export function AgentsTab({
                 <p className="mt-1 text-xs text-slate-500 leading-relaxed">
                   Creates <code className="text-slate-400">config/councils/&lt;id&gt;.json</code>.
                   Choose <span className="text-slate-400">None</span> for orchestrator-only starter
-                  (no specialists); otherwise copy from an existing profile.
+                  (no specialists); otherwise copy from an existing profile. Optional metadata is stored in the file
+                  and passed to <span className="text-cyan-200/80">Council bootstrap</span> prompts when you autofill.
                 </p>
                 <div className="mt-4 space-y-3">
                   <label className="block text-xs text-slate-400">
@@ -2046,6 +2502,17 @@ export function AgentsTab({
                     />
                   </label>
                   <label className="block text-xs text-slate-400">
+                    Display name <span className="text-slate-600">(optional)</span>
+                    <input
+                      type="text"
+                      className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+                      value={createDisplayName}
+                      onChange={(e) => setCreateDisplayName(e.target.value)}
+                      placeholder="Human-readable title (defaults to id for LLM context)"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-400">
                     Copy from
                     <select
                       className="mt-1 w-full text-sm py-2 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100"
@@ -2062,10 +2529,114 @@ export function AgentsTab({
                       ))}
                     </select>
                   </label>
+                  <label className="block text-xs text-slate-400">
+                    Area / domain <span className="text-slate-600">(optional)</span>
+                    <input
+                      type="text"
+                      className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+                      value={createArea}
+                      onChange={(e) => setCreateArea(e.target.value)}
+                      placeholder="e.g. product security, research ops"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-400">
+                    Tags <span className="text-slate-600">(comma-separated, optional)</span>
+                    <input
+                      type="text"
+                      className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+                      value={createTagsLine}
+                      onChange={(e) => setCreateTagsLine(e.target.value)}
+                      placeholder="research, codegen, review"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-400">
+                    Notes <span className="text-slate-600">(optional)</span>
+                    <textarea
+                      className="mt-1 w-full rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500/50 min-h-[4.5rem]"
+                      value={createNotes}
+                      onChange={(e) => setCreateNotes(e.target.value)}
+                      placeholder="Mission, constraints, or context for humans and the autofill model."
+                    />
+                  </label>
+                  <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 rounded border-slate-600 bg-slate-950 text-violet-500 focus:ring-violet-500/40"
+                      checked={createAutofillPrompts}
+                      onChange={(e) => setCreateAutofillPrompts(e.target.checked)}
+                    />
+                    <span>
+                      <span className="text-slate-200 font-medium">Autofill prompts with LLM</span>
+                      <span className="block text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                        Drafts orchestrator and specialist system prompts from the name, metadata, and template roster.
+                        Editable under Pipeline defaults → Council bootstrap. Requires a working model.
+                      </span>
+                    </span>
+                  </label>
+                  {createAutofillPrompts ? (
+                    <label className="block text-xs text-slate-400">
+                      Model for autofill
+                      <select
+                        className="mt-1 w-full text-sm py-2 px-2 rounded-lg border border-slate-600/60 bg-slate-900/80 text-slate-100"
+                        value={createAutofillModel || refineModel || ''}
+                        onChange={(e) => setCreateAutofillModel(e.target.value)}
+                      >
+                        {(() => {
+                          const opts =
+                            refineModels.length > 0
+                              ? refineModels
+                              : refineModel
+                                ? [refineModel]
+                                : []
+                          if (opts.length === 0) {
+                            return (
+                              <option value="">Provider default (from server)</option>
+                            )
+                          }
+                          return opts.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))
+                        })()}
+                      </select>
+                      <span className="block text-[10px] text-slate-600 mt-1">
+                        Matches the main header model when you pick the same name; leave as-is or choose another
+                        installed model.
+                      </span>
+                    </label>
+                  ) : null}
                 </div>
                 {createError && (
                   <p className="mt-3 text-xs text-amber-200/95">{createError}</p>
                 )}
+                {creating && createProgressMessage ? (
+                  <div
+                    className="mt-4 space-y-2.5 rounded-xl border border-violet-500/30 bg-violet-950/25 px-3 py-3"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span
+                        className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 border-violet-400 border-t-transparent animate-spin"
+                        aria-hidden
+                      />
+                      <p className="text-xs text-violet-100/95 leading-relaxed min-w-0">
+                        {createProgressMessage}
+                      </p>
+                    </div>
+                    <div className="council-create-progress-track" aria-hidden>
+                      <div className="council-create-progress-fill" />
+                    </div>
+                    {createAutofillPrompts ? (
+                      <p className="text-[10px] text-slate-500 leading-snug">
+                        You can keep this dialog open — closing is disabled until creation finishes.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
                   <button
                     type="button"

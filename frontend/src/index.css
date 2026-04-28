@@ -178,3 +178,20 @@ body {
 .kbd-hint {
   @apply inline rounded border border-slate-600/70 bg-slate-900/90 px-1 py-px font-mono text-[0.7rem] text-slate-400;
 }
+
+/* Indeterminate bar — council create / LLM autofill wait */
+@keyframes council-create-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+.council-create-progress-track {
+  @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-800/90;
+}
+.council-create-progress-fill {
+  @apply h-full w-2/5 rounded-full bg-violet-500/75;
+  animation: council-create-indeterminate 2.1s ease-in-out infinite;
+}
