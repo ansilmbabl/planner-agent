@@ -4,6 +4,7 @@ import { getPreferences, putPreferences } from '../api'
 import { AgentsTab } from './AgentsTab'
 import { HistoryMemoryTab } from './HistoryMemoryTab'
 import { SettingsFlowOverview } from './SettingsFlowOverview'
+import { ToolsTab } from './ToolsTab'
 
 type SettingsPanelProps = {
   health: HealthResponse | null
@@ -26,6 +27,7 @@ type SettingsPanelProps = {
 export type SettingsTab =
   | 'flow'
   | 'connection'
+  | 'tools'
   | 'prompts_pipeline'
   | 'prompts_council'
   | 'agents'
@@ -187,6 +189,12 @@ export function SettingsPanel({
             label="Connection"
             hint="Models & research"
           />
+          <NavButton
+            active={tab === 'tools'}
+            onClick={() => setTab('tools')}
+            label="Tools"
+            hint="Agent capabilities registry"
+          />
           <div className="px-2 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
             Prompts
           </div>
@@ -230,6 +238,7 @@ export function SettingsPanel({
             >
               <option value="flow">Flow — how a run works</option>
               <option value="connection">Connection</option>
+              <option value="tools">Tools — agent capabilities</option>
               <option value="prompts_pipeline">Prompts — pipeline defaults (search)</option>
               <option value="prompts_council">Prompts — council & roles</option>
               <option value="agents">Council — agents</option>
@@ -239,6 +248,8 @@ export function SettingsPanel({
 
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-6 w-full max-w-5xl lg:max-w-none xl:max-w-6xl">
             {tab === 'flow' && <SettingsFlowOverview />}
+
+            {tab === 'tools' && <ToolsTab />}
 
             {tab === 'connection' && (
               <div className="max-w-xl space-y-6">

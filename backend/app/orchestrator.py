@@ -29,6 +29,7 @@ from .session import (
     SessionStore,
     archive_current_plan,
 )
+from .tool_registry import agent_tools_system_section, effective_agent_tool_ids
 from .tools.fetch_url import fetch_url_text
 from .tools.search import ddg_search, tavily_search
 from .user_preferences import load_preferences
@@ -565,7 +566,10 @@ async def _agent_turn(
     r: int,
     same_round: str,
 ) -> dict[str, Any]:
-    system = agent.system_prompt + "\n" + get_prompt("debate_turn_schema")
+    tool_block = agent_tools_system_section(effective_agent_tool_ids(agent))
+    system = (
+        agent.system_prompt + "\n" + tool_block + "\n" + get_prompt("debate_turn_schema")
+    )
     user = _build_agent_user_payload(
         agent, user_brief, research_brief, prior_summary, r, same_round
     )

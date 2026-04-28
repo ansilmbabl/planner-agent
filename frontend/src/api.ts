@@ -148,6 +148,11 @@ export type AgentDef = {
   title: string
   system_prompt: string
   tools_enabled: boolean
+  /**
+   * Subset of server-registered tool ids. Empty/absent while tools_enabled means all
+   * current registry tools (compact default for new roles).
+   */
+  tool_ids?: string[]
 }
 
 export type CouncilConfig = {
@@ -179,6 +184,20 @@ export type CouncilConfig = {
   /** Domain or mission focus. */
   area?: string | null
 }
+
+export type AgentToolDefinition = {
+  id: string
+  name: string
+  description: string
+}
+
+export async function getTools(): Promise<AgentToolDefinition[]> {
+  const r = await fetch(`${API}/tools`)
+  if (!r.ok) throw new Error(`tools: ${r.status}`)
+  const j = (await r.json()) as { tools?: AgentToolDefinition[] }
+  return j.tools ?? []
+}
+
 
 export async function listCouncils(): Promise<string[]> {
   const r = await fetch(`${API}/councils`)

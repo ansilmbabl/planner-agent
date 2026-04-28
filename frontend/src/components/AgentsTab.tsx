@@ -15,6 +15,7 @@ import {
   deleteCouncilVersion,
   getBuiltinPrompts,
   getCouncil,
+  getTools,
   listCouncilVersions,
   listCouncils,
   putBuiltinPrompt,
@@ -23,6 +24,7 @@ import {
   resetBuiltinPrompts,
   restoreCouncilVersion,
   type AgentDef,
+  type AgentToolDefinition,
   type BuiltinPromptItem,
   type CouncilConfig,
   type CouncilVersionRow,
@@ -34,6 +36,7 @@ import {
   mergeCouncilDefaults,
   parseCouncilConfigText,
   slugAgentId,
+  agentHasEffectiveTools,
 } from '../agentsConfigUtils'
 import { PromptPipelineMap } from './PromptPipelineMap'
 import { PromptRefineWidget } from './PromptRefineWidget'
@@ -77,6 +80,93 @@ const REGENERATE_COUNCIL_PROGRESS: string[] = [
 ]
 
 type Selection = { kind: 'debate'; index: number }
+
+function AgentToolPicker({
+  agent,
+  registeredTools,
+  onChange,
+}: {
+  agent: AgentDef
+  registeredTools: AgentToolDefinition[]
+  onChange: (p: Partial<AgentDef>) => void
+}) {
+  const regIds = useMemo(
+    () => registeredTools.map((t) => t.id),
+    [registeredTools],
+  )
+
+  const toggleTool = useCallback(
+    (tid: string, checked: boolean) => {
+      if (!agent.tools_enabled || regIds.length === 0) return
+      const curEff = new Set<string>()
+      const raw = agent.tool_ids ?? []
+      if (raw.length === 0) regIds.forEach((id) => curEff.add(id))
+      else {
+        for (const id of raw) {
+          if (regIds.includes(id)) curEff.add(id)
+        }
+      }
+      if (checked) curEff.add(tid)
+      else curEff.delete(tid)
+      if (curEff.size === 0) {
+        onChange({ tools_enabled: false, tool_ids: [] })
+        return
+      }
+      if (curEff.size === regIds.length) {
+        onChange({ tool_ids: [] })
+        return
+      }
+      onChange({ tool_ids: [...curEff].sort() })
+    },
+    [agent.tools_enabled, agent.tool_ids, onChange, regIds],
+  )
+
+  if (registeredTools.length === 0) return null
+
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-slate-900/40 px-2.5 py-2 space-y-2">
+      <div className="text-[11px] text-slate-400 leading-snug">
+        <span className="font-medium text-slate-300">Tool access</span>
+        <p className="text-[10px] text-slate-500 mt-1">
+          Empty list in saved JSON means <span className="text-slate-400">all</span> registry tools for this role.
+          Uncheck a tool to store an explicit subset (new server tools only appear automatically when the list is
+          empty).
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        {registeredTools.map((t) => (
+          <label
+            key={t.id}
+            className={`flex items-start gap-2 text-[11px] ${
+              agent.tools_enabled ? 'text-slate-300 cursor-pointer' : 'text-slate-600 cursor-not-allowed'
+            }`}
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5 rounded border-slate-600 bg-slate-950 text-violet-500 focus:ring-violet-500/40 shrink-0"
+              disabled={!agent.tools_enabled}
+              checked={
+                !agent.tools_enabled
+                  ? false
+                  : !agent.tool_ids?.length
+                    ? true
+                    : (agent.tool_ids ?? []).includes(t.id)
+              }
+              onChange={(e) => toggleTool(t.id, e.target.checked)}
+            />
+            <span>
+              <span className="font-medium">{t.name}</span>
+              <code className="ml-1 text-[10px] text-slate-500">{t.id}</code>
+              <span className="block text-[10px] text-slate-500 leading-snug mt-0.5">
+                {t.description}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function initials(name: string, id: string) {
   const s = (name || id).trim()
@@ -144,7 +234,7 @@ function GraphNode({
         {tools && (
           <span
             className="shrink-0 rounded bg-emerald-500/20 px-1 py-px text-[8px] font-medium text-emerald-300/90"
-            title="Tools enabled in pipeline (web search, etc.)"
+            title="Per-agent tool capabilities (see editor). Orchestrator run_research is separate."
           >
             tools
           </span>
@@ -682,6 +772,7 @@ function AgentSystemPromptCard({
   collapsible = false,
   expanded = true,
   onToggleExpand,
+  registeredTools = [],
 }: {
   roleLabel: string
   agent: AgentDef
@@ -692,10 +783,15 @@ function AgentSystemPromptCard({
   collapsible?: boolean
   expanded?: boolean
   onToggleExpand?: () => void
+  registeredTools?: AgentToolDefinition[]
 }) {
   const sp = agent.system_prompt ?? ''
   const lines = sp ? sp.split(/\r\n|\r|\n/).length : 0
   const chars = sp.length
+  const registeredToolIds = useMemo(
+    () => registeredTools.map((t) => t.id),
+    [registeredTools],
+  )
   const copyPrompt = useCallback(() => {
     if (!sp) return
     void navigator.clipboard.writeText(sp)
@@ -734,6 +830,7 @@ function AgentSystemPromptCard({
         />
         Tools enabled (when the pipeline supports them)
       </label>
+      <AgentToolPicker agent={agent} registeredTools={registeredTools} onChange={onChange} />
     </>
   )
 
@@ -765,7 +862,7 @@ function AgentSystemPromptCard({
                 <span className="text-[10px] text-slate-600">
                   {lines} L · {chars} ch
                 </span>
-                {agent.tools_enabled ? (
+                {agentHasEffectiveTools(agent, registeredToolIds) ? (
                   <span className="text-[10px] font-medium text-emerald-200/80">Tools</span>
                 ) : null}
               </div>
@@ -878,6 +975,23 @@ export function AgentsTab({
   useEffect(() => {
     configRef.current = config
   }, [config])
+
+  const [registeredTools, setRegisteredTools] = useState<AgentToolDefinition[]>([])
+  useEffect(() => {
+    let live = true
+    void getTools()
+      .then((t) => {
+        if (live) setRegisteredTools(t)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
+  const registeredToolIds = useMemo(
+    () => registeredTools.map((x) => x.id),
+    [registeredTools],
+  )
 
   const stopCreateProgressTicker = useCallback(() => {
     if (createProgressIntervalRef.current != null) {
@@ -1288,6 +1402,7 @@ export function AgentsTab({
         title: 'Perspective',
         system_prompt: '',
         tools_enabled: true,
+        tool_ids: [],
       }
       const newIndex = c.debating_agents.length
       const next = { ...c, debating_agents: [...c.debating_agents, fresh] }
@@ -2215,6 +2330,7 @@ export function AgentsTab({
                         onChange={(p) => updateDebater(i, p)}
                         refineModels={refineModels}
                         refineDefaultModel={refineModel}
+                        registeredTools={registeredTools}
                       />
                     ))}
                   </div>
@@ -2276,7 +2392,7 @@ export function AgentsTab({
                       label={ag.name}
                       subtitle={ag.title}
                       id={ag.id}
-                      tools={ag.tools_enabled}
+                      tools={agentHasEffectiveTools(ag, registeredToolIds)}
                       step={i + 1}
                       selected={sel?.kind === 'debate' && sel.index === i}
                       onSelect={() => {
@@ -2300,7 +2416,9 @@ export function AgentsTab({
 
           <ul className="mt-4 space-y-1.5 text-[10px] text-slate-500 border-t border-white/5 pt-3">
             <li>
-              <span className="text-emerald-400/80">tools</span> = search/tools enabled in the pipeline
+              <span className="text-emerald-400/80">tools</span> chip: this agent has at least one registered
+              capability in its prompt (or all, when the saved list is empty). Orchestrator{' '}
+              <code className="text-slate-600">run_research</code> is separate.
             </li>
             <li>
               Routing ids are stable in logs and orchestrator JSON (not random — derived from name or a slug).
@@ -2426,6 +2544,7 @@ export function AgentsTab({
                     refineModels={refineModels}
                     refineDefaultModel={refineModel}
                     refineContextLabel={`Agent ${selectedAgent.index + 1} system prompt`}
+                    registeredTools={registeredTools}
                   />
                 </div>
 
@@ -2671,6 +2790,7 @@ function AgentFields({
   refineModels = [],
   refineDefaultModel = '',
   refineContextLabel = 'Agent system prompt',
+  registeredTools = [],
 }: {
   agent: AgentDef
   onChange: (p: Partial<AgentDef>) => void
@@ -2680,6 +2800,7 @@ function AgentFields({
   refineModels?: string[]
   refineDefaultModel?: string
   refineContextLabel?: string
+  registeredTools?: AgentToolDefinition[]
 }) {
   const sp = agent.system_prompt ?? ''
   const lines = sp ? sp.split(/\r\n|\r|\n/).length : 0
@@ -2782,6 +2903,7 @@ function AgentFields({
         />
         Tools enabled (search / tools when supported)
       </label>
+      <AgentToolPicker agent={agent} registeredTools={registeredTools} onChange={onChange} />
     </div>
   )
 }

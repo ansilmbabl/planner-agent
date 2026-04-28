@@ -13,6 +13,30 @@ class AgentDef(BaseModel):
     title: str
     system_prompt: str
     tools_enabled: bool = True
+    tool_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Subset of server-registered tool ids (e.g. web_search, fetch_url). "
+            "When tools_enabled is true and this is empty, all registered tools apply."
+        ),
+    )
+
+    @field_validator("tool_ids", mode="before")
+    @classmethod
+    def _norm_tool_ids(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for x in v:
+            if isinstance(x, str):
+                s = x.strip()
+                if s and s not in out:
+                    out.append(s)
+            if len(out) >= 24:
+                break
+        return out
 
 
 class ReferenceUrl(BaseModel):

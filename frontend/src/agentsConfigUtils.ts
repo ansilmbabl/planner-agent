@@ -8,6 +8,35 @@ export const DEFAULT_ORCHESTRATOR_AGENT: AgentDef = {
   system_prompt:
     'You are the Council Orchestrator. Choose exactly ONE next step: research, calling agents by id, asking the user, replying yourself, requesting the configured primary output, or ending. Route only; do not role-play as a council agent.',
   tools_enabled: false,
+  tool_ids: [],
+}
+
+function normalizeToolIdsList(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const x of v) {
+    if (typeof x !== 'string') continue
+    const s = x.trim()
+    if (s && !out.includes(s)) out.push(s)
+    if (out.length >= 24) break
+  }
+  return out
+}
+
+/** Whether the graph / badges should show a tools chip (server registry ids). */
+export function agentHasEffectiveTools(
+  agent: AgentDef,
+  registeredIds: string[]
+): boolean {
+  if (!agent.tools_enabled) return false
+  if (!registeredIds.length) return true
+  const raw = agent.tool_ids ?? []
+  if (raw.length === 0) return true
+  return raw.some((id) => registeredIds.includes(id))
+}
+
+function normalizeAgentFields(a: AgentDef): AgentDef {
+  return { ...a, tool_ids: normalizeToolIdsList(a.tool_ids) }
 }
 
 /** Normalize optional council fields so the settings UI always has orchestrator + instructions string. */
@@ -20,10 +49,11 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
   const tags = Array.isArray(c.tags)
     ? c.tags.map((t) => (typeof t === 'string' ? t.trim() : '')).filter(Boolean).slice(0, 48)
     : []
+  const orch = normalizeAgentFields(c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT)
   return {
     ...c,
     initial_research: c.initial_research !== false,
-    orchestrator: c.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT,
+    orchestrator: orch,
     orchestrator_user_instructions: c.orchestrator_user_instructions ?? '',
     output_mode: om,
     output_instructions: c.output_instructions ?? '',
@@ -32,6 +62,7 @@ export function mergeCouncilDefaults(c: CouncilConfig): CouncilConfig {
     notes: c.notes ?? '',
     tags,
     area: c.area ?? '',
+    debating_agents: (c.debating_agents ?? []).map(normalizeAgentFields),
   }
 }
 
@@ -46,6 +77,7 @@ function normalizeAgentFromJson(
   const system_prompt =
     typeof row.system_prompt === 'string' ? row.system_prompt : ''
   const tools_enabled = Boolean(row.tools_enabled)
+  const tool_ids = normalizeToolIdsList(row.tool_ids)
   if (!id) return null
   return {
     id,
@@ -53,6 +85,7 @@ function normalizeAgentFromJson(
     title,
     system_prompt,
     tools_enabled,
+    tool_ids,
   }
 }
 

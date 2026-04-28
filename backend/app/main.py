@@ -43,6 +43,7 @@ from .council_bootstrap import (
     roster_json_for_prompt,
 )
 from .config import Settings, get_settings
+from .tool_registry import tool_definitions_for_api
 from .llm import (
     _msg_system,
     _msg_user,
@@ -573,6 +574,12 @@ async def health() -> dict[str, Any]:
         "tavily_ready": rp != "tavily" or bool(tkey),
     }
     return h
+
+
+@app.get("/api/tools", response_model=None)
+async def list_agent_tools() -> dict[str, Any]:
+    """Stable ids + copy for Settings UI and council JSON tool_ids."""
+    return {"tools": tool_definitions_for_api()}
 
 
 @app.get("/api/preferences")

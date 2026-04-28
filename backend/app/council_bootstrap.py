@@ -56,6 +56,11 @@ def apply_council_bootstrap_patch(config: CouncilConfigFile, data: dict[str, Any
             o.title = tl.strip()
         if "tools_enabled" in orch_patch:
             o.tools_enabled = bool(orch_patch["tools_enabled"])
+        if "tool_ids" in orch_patch:
+            ti_o = orch_patch["tool_ids"]
+            if isinstance(ti_o, list):
+                o = o.model_copy(update={"tool_ids": ti_o})
+                config.orchestrator = o
 
     raw_agents = data.get("agents")
     if not isinstance(raw_agents, list):
@@ -83,17 +88,32 @@ def apply_council_bootstrap_patch(config: CouncilConfigFile, data: dict[str, Any
         nm = item.get("name")
         tl = item.get("title")
         te = item.get("tools_enabled")
+        ti = item.get("tool_ids")
 
         if aid in by_id_idx:
             i = by_id_idx[aid]
             cur = order[i]
-            order[i] = AgentDef(
-                id=aid,
-                name=(nm if isinstance(nm, str) and nm.strip() else cur.name),
-                title=(tl if isinstance(tl, str) else cur.title) or "",
-                system_prompt=sp,
-                tools_enabled=bool(te) if te is not None else cur.tools_enabled,
-            )
+            next_tools = cur.tools_enabled
+            if te is not None:
+                next_tools = bool(te)
+            if isinstance(ti, list):
+                order[i] = AgentDef(
+                    id=aid,
+                    name=(nm if isinstance(nm, str) and nm.strip() else cur.name),
+                    title=(tl if isinstance(tl, str) else cur.title) or "",
+                    system_prompt=sp,
+                    tools_enabled=next_tools,
+                    tool_ids=ti,
+                )
+            else:
+                order[i] = AgentDef(
+                    id=aid,
+                    name=(nm if isinstance(nm, str) and nm.strip() else cur.name),
+                    title=(tl if isinstance(tl, str) else cur.title) or "",
+                    system_prompt=sp,
+                    tools_enabled=next_tools,
+                    tool_ids=cur.tool_ids,
+                )
         else:
             order.append(
                 AgentDef(
@@ -102,6 +122,7 @@ def apply_council_bootstrap_patch(config: CouncilConfigFile, data: dict[str, Any
                     title=(tl if isinstance(tl, str) else "") or "",
                     system_prompt=sp,
                     tools_enabled=True if te is None else bool(te),
+                    tool_ids=ti if isinstance(ti, list) else [],
                 )
             )
             by_id_idx[aid] = len(order) - 1
