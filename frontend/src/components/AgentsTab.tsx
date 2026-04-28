@@ -33,6 +33,27 @@ import {
 import { PromptPipelineMap } from './PromptPipelineMap'
 import { PromptRefineWidget } from './PromptRefineWidget'
 
+/** Sidebar / category order for Pipeline defaults (unknown categories sort last). */
+const PIPELINE_CATEGORY_ORDER: string[] = [
+  'Orchestrator',
+  'Specialists',
+  'Research',
+  'Plan writer',
+  'Artifact — report',
+  'Artifact — code',
+  'Plan refine',
+  'Prompt polish (settings)',
+]
+
+function sortPipelineCategories(a: string, b: string): number {
+  const ia = PIPELINE_CATEGORY_ORDER.indexOf(a)
+  const ib = PIPELINE_CATEGORY_ORDER.indexOf(b)
+  const sa = ia === -1 ? 999 : ia
+  const sb = ib === -1 ? 999 : ib
+  if (sa !== sb) return sa - sb
+  return a.localeCompare(b)
+}
+
 type Selection = { kind: 'debate'; index: number }
 
 function initials(name: string, id: string) {
@@ -253,6 +274,10 @@ function PipelineBuiltinPrompts({
   const [err, setErr] = useState<string | null>(null)
   const [savingKey, setSavingKey] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [searchQuery, setSearchQuery] = useState('')
+  const [showTouchesOnly, setShowTouchesOnly] = useState(false)
+  const [collapsedCats, setCollapsedCats] = useState<Set<string>>(() => new Set())
+  const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(() => new Set())
 
   const reload = useCallback(async () => {
     const rows = await getBuiltinPrompts()
@@ -284,15 +309,72 @@ function PipelineBuiltinPrompts({
     }
   }, [reload])
 
-  const byCategory = useMemo(() => {
+  const filteredItems = useMemo(() => {
+    let list = items
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      list = list.filter(
+        (it) =>
+          it.key.toLowerCase().includes(q) ||
+          it.title.toLowerCase().includes(q) ||
+          it.category.toLowerCase().includes(q) ||
+          it.description.toLowerCase().includes(q)
+      )
+    }
+    if (showTouchesOnly) {
+      list = list.filter((it) => {
+        const dirty = (drafts[it.key] ?? '') !== it.content
+        return dirty || !it.is_default
+      })
+    }
+    return list
+  }, [items, searchQuery, showTouchesOnly, drafts])
+
+  const groupedFiltered = useMemo(() => {
     const m = new Map<string, BuiltinPromptItem[]>()
-    for (const it of items) {
+    for (const it of filteredItems) {
       const arr = m.get(it.category) ?? []
       arr.push(it)
       m.set(it.category, arr)
     }
-    return m
-  }, [items])
+    return [...m.entries()].sort(([a], [b]) => sortPipelineCategories(a, b))
+  }, [filteredItems])
+
+  const stats = useMemo(() => {
+    const customized = items.filter((i) => !i.is_default).length
+    const dirty = items.filter((i) => (drafts[i.key] ?? '') !== i.content).length
+    return { customized, dirty, total: items.length }
+  }, [items, drafts])
+
+  const toggleCat = useCallback((cat: string) => {
+    setCollapsedCats((prev) => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat)
+      else next.add(cat)
+      return next
+    })
+  }, [])
+
+  const togglePromptOpen = useCallback((key: string) => {
+    setExpandedPrompts((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
+  const expandAllPromptEditors = useCallback(() => {
+    setExpandedPrompts(new Set(filteredItems.map((i) => i.key)))
+  }, [filteredItems])
+
+  const collapseAllPromptEditors = useCallback(() => {
+    setExpandedPrompts(new Set())
+  }, [])
+
+  const expandAllCategories = useCallback(() => {
+    setCollapsedCats(new Set())
+  }, [])
 
   const saveKey = async (key: string) => {
     setSavingKey(key)
@@ -337,97 +419,229 @@ function PipelineBuiltinPrompts({
 
   return (
     <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-b from-cyan-950/20 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-cyan-200/95">Pipeline defaults (editable fragments)</h3>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-cyan-200/95">Edit pipeline fragments</h3>
           <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
-            Global defaults used by the backend (artifact creation after discussion, research, agent JSON shape,
-            routing schema, plan refine, prompt-field refinement in this UI). Overrides are stored in{' '}
-            <code className="text-slate-600">data/prompt_overrides.json</code> next to the session database — not
-            in council JSON.
+            Backend merges these with live text. Expand a row to edit; overrides live in{' '}
+            <code className="text-slate-600">data/prompt_overrides.json</code>.
+          </p>
+          <p className="text-[10px] text-slate-600 mt-2">
+            {stats.total} keys · {stats.customized} saved override{stats.customized === 1 ? '' : 's'} ·{' '}
+            {stats.dirty} unsaved edit{stats.dirty === 1 ? '' : 's'}
           </p>
         </div>
         <button
           type="button"
           onClick={() => void onResetAll()}
-          className="shrink-0 text-xs font-medium rounded-lg border border-slate-600/60 bg-slate-900/50 px-2.5 py-1.5 text-slate-300 hover:bg-white/[0.05]"
+          className="shrink-0 text-xs font-medium rounded-lg border border-slate-600/60 bg-slate-900/50 px-2.5 py-1.5 text-slate-300 hover:bg-white/[0.05] self-start"
         >
           Reset all overrides
         </button>
       </div>
+
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 sm:items-center rounded-xl border border-white/[0.06] bg-slate-950/40 p-2 sm:p-2.5">
+        <div className="relative flex-1 min-w-[12rem] max-w-md">
+          <label htmlFor="pipeline-prompt-search" className="sr-only">
+            Search pipeline prompts
+          </label>
+          <input
+            id="pipeline-prompt-search"
+            type="search"
+            autoComplete="off"
+            placeholder="Search by title, key, or description…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full rounded-lg border border-slate-600/60 bg-slate-900/90 py-2 pl-2.5 pr-8 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500/35"
+          />
+          {searchQuery ? (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-slate-500 hover:text-slate-300 text-[10px]"
+            >
+              ✕
+            </button>
+          ) : null}
+        </div>
+        <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer shrink-0">
+          <input
+            type="checkbox"
+            className="rounded border-slate-600 bg-slate-900 accent-cyan-500"
+            checked={showTouchesOnly}
+            onChange={(e) => setShowTouchesOnly(e.target.checked)}
+          />
+          Overrides &amp; unsaved only
+        </label>
+        <div className="flex flex-wrap gap-1.5 sm:ml-auto">
+          <button
+            type="button"
+            onClick={expandAllCategories}
+            className="text-[11px] font-medium rounded-md border border-slate-600/50 px-2 py-1 text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+          >
+            Open all sections
+          </button>
+          <button
+            type="button"
+            onClick={expandAllPromptEditors}
+            className="text-[11px] font-medium rounded-md border border-slate-600/50 px-2 py-1 text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+          >
+            Expand all editors
+          </button>
+          <button
+            type="button"
+            onClick={collapseAllPromptEditors}
+            className="text-[11px] font-medium rounded-md border border-slate-600/50 px-2 py-1 text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+          >
+            Collapse editors
+          </button>
+        </div>
+      </div>
+
       {err && (
         <p className="text-xs text-amber-200/95 border border-amber-500/25 rounded-lg px-2 py-1.5">{err}</p>
       )}
-      <div className="space-y-6">
-        {Array.from(byCategory.entries()).map(([cat, rows]) => (
-          <div key={cat}>
-            <h4 className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">{cat}</h4>
-            <div className="space-y-3">
-              {rows.map((row) => {
-                const dirty = (drafts[row.key] ?? '') !== row.content
-                return (
-                  <div
-                    key={row.key}
-                    className="rounded-xl border border-white/[0.06] bg-slate-900/40 p-3 space-y-2"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-medium text-slate-200">{row.title}</div>
-                        <p className="text-[11px] text-slate-500 mt-0.5 max-w-prose">{row.description}</p>
-                        <code className="text-[10px] text-slate-600 mt-1 inline-block">{row.key}</code>
-                        {!row.is_default && (
-                          <span className="ml-2 text-[10px] text-amber-200/80">custom override</span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={!dirty || savingKey === row.key}
-                          onClick={() => void saveKey(row.key)}
-                          className="text-xs font-medium rounded-lg bg-cyan-600/90 hover:bg-cyan-500 disabled:opacity-40 px-2.5 py-1 text-white"
+
+      {groupedFiltered.length === 0 ? (
+        <p className="text-sm text-slate-500 rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-6 text-center">
+          No prompts match. Clear search or turn off the filter.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {groupedFiltered.map(([cat, rows]) => {
+            const catCollapsed = collapsedCats.has(cat)
+            const overrideCount = rows.filter((r) => !r.is_default).length
+            const dirtyCount = rows.filter((r) => (drafts[r.key] ?? '') !== r.content).length
+            return (
+              <section
+                key={cat}
+                className="rounded-xl border border-white/[0.08] bg-slate-900/35 overflow-hidden"
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleCat(cat)}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-white/[0.03] transition-colors"
+                  aria-expanded={!catCollapsed}
+                >
+                  <span className="text-slate-500 text-[10px] w-4 shrink-0 tabular-nums">
+                    {catCollapsed ? '▶' : '▼'}
+                  </span>
+                  <span className="text-xs font-semibold text-slate-200 flex-1 min-w-0">{cat}</span>
+                  <span className="text-[10px] text-slate-500 shrink-0 text-right">
+                    {rows.length} prompt{rows.length === 1 ? '' : 's'}
+                    {overrideCount ? (
+                      <span className="text-cyan-200/75"> · {overrideCount} override</span>
+                    ) : null}
+                    {dirtyCount ? <span className="text-amber-200/85"> · {dirtyCount} unsaved</span> : null}
+                  </span>
+                </button>
+                {!catCollapsed && (
+                  <div className="border-t border-white/[0.06] space-y-2 p-2 sm:p-3 bg-black/10">
+                    {rows.map((row) => {
+                      const dirty = (drafts[row.key] ?? '') !== row.content
+                      const open = expandedPrompts.has(row.key)
+                      const draft = drafts[row.key] ?? ''
+                      const lines = draft ? draft.split(/\r\n|\r|\n/).length : 0
+                      const chars = draft.length
+                      return (
+                        <div
+                          key={row.key}
+                          className="rounded-lg border border-white/[0.06] bg-slate-950/50 overflow-hidden"
                         >
-                          {savingKey === row.key ? 'Saving…' : 'Save'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={
-                            savingKey === row.key ||
-                            (drafts[row.key] ?? '') === row.content
-                          }
-                          onClick={() => {
-                            setDrafts((d) => ({ ...d, [row.key]: row.content }))
-                          }}
-                          className="text-xs font-medium rounded-lg border border-slate-600/60 px-2.5 py-1 text-slate-300 hover:bg-white/[0.05] disabled:opacity-40"
-                        >
-                          Revert
-                        </button>
-                      </div>
-                    </div>
-                    <textarea
-                      className="w-full min-h-[7rem] rounded-lg border border-slate-600/70 bg-slate-950/80 px-2.5 py-2 text-xs text-slate-100 font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
-                      value={drafts[row.key] ?? ''}
-                      onChange={(e) =>
-                        setDrafts((d) => ({ ...d, [row.key]: e.target.value }))
-                      }
-                      spellCheck={false}
-                    />
-                    <PromptRefineWidget
-                      contextLabel={`Pipeline prompt: ${row.key} (${row.title})`}
-                      currentText={drafts[row.key] ?? ''}
-                      models={refineModels}
-                      defaultModel={refineDefaultModel}
-                      onApply={(text) =>
-                        setDrafts((d) => ({ ...d, [row.key]: text }))
-                      }
-                      compact
-                    />
+                          <div className="flex items-stretch gap-0 min-h-[2.75rem]">
+                            <button
+                              type="button"
+                              onClick={() => togglePromptOpen(row.key)}
+                              aria-expanded={open}
+                              className="flex-1 flex items-center gap-2 px-2.5 py-2 text-left min-w-0 hover:bg-white/[0.04]"
+                            >
+                              <span className="text-slate-600 text-[10px] w-4 shrink-0" aria-hidden>
+                                {open ? '▼' : '▶'}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-medium text-slate-100 truncate">{row.title}</div>
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                                  <code className="text-[10px] text-slate-600 truncate max-w-[min(100%,14rem)]">
+                                    {row.key}
+                                  </code>
+                                  <span className="text-[10px] text-slate-600">
+                                    {lines} L · {chars} ch
+                                  </span>
+                                  {dirty ? (
+                                    <span className="text-[10px] font-medium text-amber-200/90">Unsaved</span>
+                                  ) : null}
+                                  {!row.is_default ? (
+                                    <span className="text-[10px] font-medium text-cyan-200/75">Override</span>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              title="Copy key"
+                              onClick={() => void navigator.clipboard.writeText(row.key)}
+                              className="shrink-0 px-2 text-[10px] font-medium text-slate-500 hover:text-cyan-300 hover:bg-white/[0.04] border-l border-white/[0.06]"
+                            >
+                              Copy key
+                            </button>
+                          </div>
+                          {open ? (
+                            <div className="border-t border-white/[0.06] p-3 space-y-2.5 bg-slate-950/80">
+                              <p className="text-[11px] text-slate-500 leading-relaxed">{row.description}</p>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  disabled={!dirty || savingKey === row.key}
+                                  onClick={() => void saveKey(row.key)}
+                                  className="text-xs font-medium rounded-lg bg-cyan-600/90 hover:bg-cyan-500 disabled:opacity-40 px-2.5 py-1.5 text-white"
+                                >
+                                  {savingKey === row.key ? 'Saving…' : 'Save'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    savingKey === row.key || (drafts[row.key] ?? '') === row.content
+                                  }
+                                  onClick={() => {
+                                    setDrafts((d) => ({ ...d, [row.key]: row.content }))
+                                  }}
+                                  className="text-xs font-medium rounded-lg border border-slate-600/60 px-2.5 py-1.5 text-slate-300 hover:bg-white/[0.05] disabled:opacity-40"
+                                >
+                                  Revert
+                                </button>
+                              </div>
+                              <textarea
+                                className="w-full min-h-[10rem] sm:min-h-[12rem] rounded-lg border border-slate-600/70 bg-slate-950/90 px-2.5 py-2 text-xs text-slate-100 font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                                value={drafts[row.key] ?? ''}
+                                onChange={(e) =>
+                                  setDrafts((d) => ({ ...d, [row.key]: e.target.value }))
+                                }
+                                spellCheck={false}
+                                aria-label={row.title}
+                              />
+                              <PromptRefineWidget
+                                contextLabel={`Pipeline prompt: ${row.key} (${row.title})`}
+                                currentText={drafts[row.key] ?? ''}
+                                models={refineModels}
+                                defaultModel={refineDefaultModel}
+                                onApply={(text) =>
+                                  setDrafts((d) => ({ ...d, [row.key]: text }))
+                                }
+                                compact
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
                   </div>
-                )
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
+                )}
+              </section>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -443,12 +657,19 @@ function AgentSystemPromptCard({
   onChange,
   refineModels = [],
   refineDefaultModel = '',
+  collapsible = false,
+  expanded = true,
+  onToggleExpand,
 }: {
   roleLabel: string
   agent: AgentDef
   onChange: (patch: Partial<AgentDef>) => void
   refineModels?: string[]
   refineDefaultModel?: string
+  /** Compact row header; editor opens when expanded (Council & roles tab). */
+  collapsible?: boolean
+  expanded?: boolean
+  onToggleExpand?: () => void
 }) {
   const sp = agent.system_prompt ?? ''
   const lines = sp ? sp.split(/\r\n|\r|\n/).length : 0
@@ -458,30 +679,8 @@ function AgentSystemPromptCard({
     void navigator.clipboard.writeText(sp)
   }, [sp])
 
-  return (
-    <div className="rounded-xl border border-white/[0.08] bg-slate-950/35 p-4 space-y-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-400/90">
-            {roleLabel}
-          </span>
-          <h4 className="text-sm font-medium text-slate-100 mt-1">
-            {agent.name || agent.id}
-          </h4>
-          <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
-            {agent.id}
-            {agent.title ? ` · ${agent.title}` : ''}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={copyPrompt}
-          disabled={!sp}
-          className="shrink-0 text-xs font-medium text-violet-400 hover:text-violet-300 disabled:opacity-30"
-        >
-          Copy prompt
-        </button>
-      </div>
+  const editor = (
+    <>
       <label className="block text-xs text-slate-400">
         System prompt
         <textarea
@@ -513,6 +712,92 @@ function AgentSystemPromptCard({
         />
         Tools enabled (when the pipeline supports them)
       </label>
+    </>
+  )
+
+  if (collapsible && onToggleExpand) {
+    return (
+      <div className="rounded-lg border border-white/[0.08] bg-slate-950/50 overflow-hidden">
+        <div className="flex items-stretch min-h-[2.75rem]">
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            aria-expanded={expanded}
+            className="flex-1 flex items-center gap-2 px-2.5 py-2 text-left min-w-0 hover:bg-white/[0.04]"
+          >
+            <span className="text-slate-600 text-[10px] w-4 shrink-0" aria-hidden>
+              {expanded ? '▼' : '▶'}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-400/90">
+                {roleLabel}
+              </div>
+              <div className="text-xs font-medium text-slate-100 truncate">{agent.name || agent.id}</div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                <code className="text-[10px] text-slate-600 truncate max-w-[min(100%,14rem)]">
+                  {agent.id}
+                </code>
+                {agent.title ? (
+                  <span className="text-[10px] text-slate-600 truncate max-w-[10rem]">{agent.title}</span>
+                ) : null}
+                <span className="text-[10px] text-slate-600">
+                  {lines} L · {chars} ch
+                </span>
+                {agent.tools_enabled ? (
+                  <span className="text-[10px] font-medium text-emerald-200/80">Tools</span>
+                ) : null}
+              </div>
+            </div>
+          </button>
+          <button
+            type="button"
+            title="Copy routing id"
+            onClick={() => void navigator.clipboard.writeText(agent.id)}
+            className="shrink-0 px-2 text-[10px] font-medium text-slate-500 hover:text-violet-300 hover:bg-white/[0.04] border-l border-white/[0.06]"
+          >
+            Copy id
+          </button>
+          <button
+            type="button"
+            onClick={copyPrompt}
+            disabled={!sp}
+            className="shrink-0 px-2 text-[10px] font-medium text-slate-500 hover:text-violet-300 hover:bg-white/[0.04] border-l border-white/[0.06] disabled:opacity-30"
+          >
+            Copy prompt
+          </button>
+        </div>
+        {expanded ? (
+          <div className="border-t border-white/[0.06] p-4 space-y-3 bg-slate-950/80">{editor}</div>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-slate-950/35 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-400/90">
+            {roleLabel}
+          </span>
+          <h4 className="text-sm font-medium text-slate-100 mt-1">
+            {agent.name || agent.id}
+          </h4>
+          <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
+            {agent.id}
+            {agent.title ? ` · ${agent.title}` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={copyPrompt}
+          disabled={!sp}
+          className="shrink-0 text-xs font-medium text-violet-400 hover:text-violet-300 disabled:opacity-30"
+        >
+          Copy prompt
+        </button>
+      </div>
+      {editor}
     </div>
   )
 }
@@ -547,11 +832,55 @@ export function AgentsTab({
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [councilAgentPromptSearch, setCouncilAgentPromptSearch] = useState('')
+  const [expandedCouncilAgentIds, setExpandedCouncilAgentIds] = useState<Set<string>>(
+    () => new Set(),
+  )
   const fileImportRef = useRef<HTMLInputElement>(null)
   const configRef = useRef<CouncilConfig | null>(null)
   useEffect(() => {
     configRef.current = config
   }, [config])
+
+  useEffect(() => {
+    setCouncilAgentPromptSearch('')
+    setExpandedCouncilAgentIds(new Set())
+  }, [councilId])
+
+  const filteredCouncilAgentRows = useMemo(() => {
+    if (!config) return [] as { agent: AgentDef; index: number }[]
+    const q = councilAgentPromptSearch.trim().toLowerCase()
+    return config.debating_agents
+      .map((agent, index) => ({ agent, index }))
+      .filter(({ agent }) => {
+        if (!q) return true
+        return (
+          agent.id.toLowerCase().includes(q) ||
+          agent.name.toLowerCase().includes(q) ||
+          (agent.title || '').toLowerCase().includes(q) ||
+          (agent.system_prompt || '').toLowerCase().includes(q)
+        )
+      })
+  }, [config, councilAgentPromptSearch])
+
+  const toggleCouncilAgentCard = useCallback((id: string) => {
+    setExpandedCouncilAgentIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const expandAllCouncilAgentCards = useCallback(() => {
+    setExpandedCouncilAgentIds(
+      new Set(filteredCouncilAgentRows.map(({ agent }) => agent.id)),
+    )
+  }, [filteredCouncilAgentRows])
+
+  const collapseAllCouncilAgentCards = useCallback(() => {
+    setExpandedCouncilAgentIds(new Set())
+  }, [])
 
   const setConfigFromServer = useCallback((c: CouncilConfig) => {
     const next = mergeCouncilDefaults(c)
@@ -1085,18 +1414,15 @@ export function AgentsTab({
     <div className="space-y-4 pb-8">
       {showPipelinePrompts && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          <span className="text-cyan-200/90 font-medium">Pipeline defaults</span> are global fragments the backend
-          merges with live session text (orchestrator JSON schema, plan writer, research, specialist turn shape).
-          They are <span className="text-slate-300">not</span> the full prompts sent to the model — see the map
-          below. Overrides: <code className="text-slate-500">data/prompt_overrides.json</code>.
+          <span className="text-cyan-200/90 font-medium">Pipeline defaults</span> are backend fragments (not full
+          prompts). Use search and sections below; open the reference for how keys compose.
         </p>
       )}
       {showCouncilPrompts && (
         <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-          <span className="text-amber-200/90 font-medium">Council &amp; roles</span> — orchestrator persona,
-          routing guidelines, and each specialist&apos;s system prompt. Saved with the council file under{' '}
-          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>. JSON action shape lives under{' '}
-          <span className="text-cyan-200/80">Pipeline defaults</span>.
+          <span className="text-amber-200/90 font-medium">Council &amp; roles</span> — saved in{' '}
+          <code className="text-slate-500">config/councils/&lt;id&gt;.json</code>. Use sections below; routing JSON
+          shape is under <span className="text-cyan-200/80">Pipeline defaults</span>.
         </p>
       )}
       {showAgents && (
@@ -1204,7 +1530,25 @@ export function AgentsTab({
       )}
 
       {showCouncilToolbar && config && (
-        <CouncilOutputSettings config={config} setConfig={setConfig} />
+        showCouncilPrompts ? (
+          <details
+            className="rounded-2xl border border-emerald-500/20 bg-gradient-to-b from-emerald-950/20 to-slate-950/50 max-w-5xl open:bg-emerald-950/10"
+            open
+          >
+            <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200 marker:text-slate-600">
+              <span className="text-emerald-200/95 font-medium">Primary output</span>
+              <span className="text-slate-500 font-normal">
+                {' '}
+                — plan / report / code / none &amp; filename
+              </span>
+            </summary>
+            <div className="px-4 pb-4 sm:px-5 border-t border-white/[0.06]">
+              <CouncilOutputSettings config={config} setConfig={setConfig} />
+            </div>
+          </details>
+        ) : (
+          <CouncilOutputSettings config={config} setConfig={setConfig} />
+        )
       )}
 
       {showAgents && (
@@ -1217,7 +1561,15 @@ export function AgentsTab({
 
       {showPipelinePrompts && (
         <>
-          <PromptPipelineMap />
+          <details className="rounded-2xl border border-white/[0.08] bg-slate-900/25 max-w-5xl open:bg-slate-900/35">
+            <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200 marker:text-slate-600">
+              <span className="text-slate-300 font-medium">Reference</span>
+              <span className="text-slate-500"> — how pipeline keys combine (optional)</span>
+            </summary>
+            <div className="px-4 pb-4 pt-0 border-t border-white/[0.06]">
+              <PromptPipelineMap />
+            </div>
+          </details>
           <PipelineBuiltinPrompts
             refineModels={refineModels}
             refineDefaultModel={refineModel}
@@ -1226,20 +1578,23 @@ export function AgentsTab({
       )}
 
       {showCouncilPrompts && (
-      <div className="rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/25 to-slate-950/50 p-4 sm:p-5 max-w-5xl space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold text-amber-200/95">
-            Orchestrator &amp; routing
-          </h3>
-          <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
-            <span className="text-slate-400">System prompt</span> is the orchestrator&apos;s role
-            (sent as the system message).{' '}
-            <span className="text-slate-400">Routing guidelines</span> are inserted into each routing
-            user turn. The action JSON schema is editable under{' '}
-            <span className="text-cyan-200/80">Pipeline defaults</span> → Orchestrator — action JSON schema.
-            Clear guidelines and save to fall back to server defaults.
-          </p>
-        </div>
+        <details
+          className="rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/25 to-slate-950/50 max-w-5xl open:shadow-sm"
+          open
+        >
+          <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200 marker:text-slate-600">
+            <span className="text-amber-200/95 font-medium">Orchestrator &amp; routing</span>
+            <span className="text-slate-500 font-normal">
+              {' '}
+              — <code className="text-slate-600 text-[11px]">{orch.id}</code> · system + guidelines
+            </span>
+          </summary>
+          <div className="px-4 pb-4 sm:px-5 space-y-3 border-t border-white/[0.06]">
+            <p className="text-[11px] text-slate-500 leading-relaxed pt-3">
+              Routing action JSON lives under{' '}
+              <span className="text-cyan-200/80">Pipeline defaults</span> → Orchestrator — action JSON schema. Leave
+              routing guidelines empty to use the backend default.
+            </p>
         <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer max-w-3xl">
           <input
             type="checkbox"
@@ -1323,22 +1678,27 @@ export function AgentsTab({
           onApply={(text) => setOrchestratorUserInstructions(text)}
           compact
         />
-      </div>
+          </div>
+        </details>
       )}
 
       {showCouncilPrompts && (
-        <div className="space-y-4 max-w-5xl">
-          <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/25 to-slate-950/50 p-4 sm:p-5 space-y-4">
+        <div className="space-y-3 max-w-5xl">
+          <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/25 to-slate-950/50 p-4 sm:p-5 space-y-3">
             <div>
-              <h3 className="text-sm font-semibold text-violet-200/95">
-                Council agent prompts
-              </h3>
-              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed max-w-2xl">
-                System prompt per agent the orchestrator can call. Add and reorder agents in the{' '}
-                <span className="text-slate-400">Council agents</span> pipeline below. The orchestrator alone
-                decides flow; there is no separate “synthesizer” or “planner” role in the council JSON — only
-                agents you define plus optional backend formatting for structured plan/report/code output modes.
+              <h3 className="text-sm font-semibold text-violet-200/95">Council agent prompts</h3>
+              <p className="text-[11px] text-slate-500 mt-1 max-w-2xl leading-relaxed">
+                Expand a row to edit system prompt and tools. Add or reorder agents in the{' '}
+                <span className="text-slate-400">Council agents</span> tab.
               </p>
+              {debaters.length > 0 ? (
+                <p className="text-[10px] text-slate-600 mt-2">
+                  {debaters.length} agent{debaters.length === 1 ? '' : 's'}
+                  {councilAgentPromptSearch.trim()
+                    ? ` · ${filteredCouncilAgentRows.length} match`
+                    : null}
+                </p>
+              ) : null}
             </div>
             {debaters.length === 0 ? (
               <div className="rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-slate-500">
@@ -1346,18 +1706,71 @@ export function AgentsTab({
                 <span className="text-slate-300">Council agents</span>, then edit their prompts here.
               </div>
             ) : (
-              <div className="space-y-4">
-                {debaters.map((ag, i) => (
-                  <AgentSystemPromptCard
-                    key={ag.id}
-                    roleLabel={`Agent ${i + 1}`}
-                    agent={ag}
-                    onChange={(p) => updateDebater(i, p)}
-                    refineModels={refineModels}
-                    refineDefaultModel={refineModel}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 sm:items-center rounded-xl border border-white/[0.06] bg-slate-950/40 p-2 sm:p-2.5">
+                  <div className="relative flex-1 min-w-[12rem] max-w-md">
+                    <label htmlFor="council-agent-prompt-search" className="sr-only">
+                      Search agents
+                    </label>
+                    <input
+                      id="council-agent-prompt-search"
+                      type="search"
+                      autoComplete="off"
+                      placeholder="Search by name, id, title, or prompt text…"
+                      value={councilAgentPromptSearch}
+                      onChange={(e) => setCouncilAgentPromptSearch(e.target.value)}
+                      className="w-full rounded-lg border border-slate-600/60 bg-slate-900/90 py-2 pl-2.5 pr-8 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-violet-500/35"
+                    />
+                    {councilAgentPromptSearch ? (
+                      <button
+                        type="button"
+                        aria-label="Clear search"
+                        onClick={() => setCouncilAgentPromptSearch('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-slate-500 hover:text-slate-300 text-[10px]"
+                      >
+                        ✕
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 sm:ml-auto">
+                    <button
+                      type="button"
+                      onClick={expandAllCouncilAgentCards}
+                      className="text-[11px] font-medium rounded-md border border-slate-600/50 px-2 py-1 text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+                    >
+                      Expand all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={collapseAllCouncilAgentCards}
+                      className="text-[11px] font-medium rounded-md border border-slate-600/50 px-2 py-1 text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+                    >
+                      Collapse all
+                    </button>
+                  </div>
+                </div>
+                {filteredCouncilAgentRows.length === 0 ? (
+                  <p className="text-sm text-slate-500 rounded-xl border border-dashed border-white/10 bg-black/15 px-4 py-6 text-center">
+                    No agents match. Clear the search.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredCouncilAgentRows.map(({ agent: ag, index: i }) => (
+                      <AgentSystemPromptCard
+                        key={ag.id}
+                        collapsible
+                        expanded={expandedCouncilAgentIds.has(ag.id)}
+                        onToggleExpand={() => toggleCouncilAgentCard(ag.id)}
+                        roleLabel={`Agent ${i + 1}`}
+                        agent={ag}
+                        onChange={(p) => updateDebater(i, p)}
+                        refineModels={refineModels}
+                        refineDefaultModel={refineModel}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4 sm:p-5">

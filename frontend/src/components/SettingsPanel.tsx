@@ -194,12 +194,12 @@ export function SettingsPanel({
             active={tab === 'prompts_pipeline'}
             onClick={() => setTab('prompts_pipeline')}
             label="Pipeline defaults"
-            hint="Global fragments & map"
+            hint="Search & edit fragments"
           />
           <NavButton
             active={tab === 'prompts_council'}
             onClick={() => setTab('prompts_council')}
-            hint="Per-council roles"
+            hint="Search & collapsible prompts"
             label="Council & roles"
           />
           <div className="px-2 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
@@ -230,7 +230,7 @@ export function SettingsPanel({
             >
               <option value="flow">Flow — how a run works</option>
               <option value="connection">Connection</option>
-              <option value="prompts_pipeline">Prompts — pipeline defaults</option>
+              <option value="prompts_pipeline">Prompts — pipeline defaults (search)</option>
               <option value="prompts_council">Prompts — council & roles</option>
               <option value="agents">Council — agents</option>
               <option value="history">History</option>
